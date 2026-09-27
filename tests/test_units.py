@@ -1,14 +1,13 @@
 import math
 from datetime import datetime, timezone
-from pathlib import Path
 
 import pytest
 
-from node.aggregate import combine_binary, combine_multiple_choice, geo_mean_odds
+from node.aggregate import combine_binary, combine_multiple_choice, floor_and_normalize, geo_mean_odds
 from node.config import ConfigError, parse_config
 from node.guard import check_can_run, publishing_enabled
 from node.ledger import Ledger
-from node.models import ResolvedModels, pick, resolve_models
+from node.models import pick, resolve_models
 from node.config import ModelSettings
 from node.parsing import (
     parse_binary,
@@ -246,3 +245,119 @@ def test_resolve_models_and_route():
     assert resolved.search is None
     assert resolved.with_route("a/2") == "openrouter/a/2"
     assert resolved.with_route("openrouter/a/2") == "openrouter/a/2"
+
+
+# ---------------------------------------------------------------- review regressions
+
+def _percentile_text(values, suffix=""):
+    return "\n".join(f"Percentile {p}: {v}{suffix}" for p, v in zip((10, 20, 40, 60, 80, 90), values))
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        _percentile_text([1.2, 1.5, 2, 2.4, 2.9, 3.1], " million"),
+        _percentile_text(["1,500", "1,600", "1,700", "1,800", "1,900", "2,000"], " million"),
+        _percentile_text([1, 2, 3, 4, 5, 6], "k"),
+        _percentile_text([1.2, 1.5, 2, 2.4, 2.9, 3.1], "B"),
+        _percentile_text(["$1", "$2", "$3", "$4", "$5", "$6"]),
+        _percentile_text(["0,5", "1,2", "2,0", "2,8", "3,5", "4,1"]),  # decimal commas
+        _percentile_text([1, 2, 3, 4, 5, 6]) + "\nThese are my final numbers.",
+        _percentile_text([1, 2, 3, 4, 5, 6]) + "\n| a | b |",
+    ],
+)
+def test_parse_percentiles_leaves_units_and_extras_to_the_model_parser(text):
+    assert parse_percentiles(text) is None
+
+
+def test_parse_percentiles_reads_only_the_final_block():
+    draft = _percentile_text([100, 200, 300, 400, 500, 600])
+    final = _percentile_text(["$150", "$250", "$350", "$450", "$550", "$650"])
+    assert parse_percentiles(draft + "\n\nFinal answer:\n" + final) is None
+    final_ok = _percentile_text([150, 250, 350, 450, 550, 650])
+    assert parse_percentiles(draft + "\nFinal:\n" + final_ok)[0] == (0.1, 150.0)
+
+
+def test_parse_percentiles_accepts_the_prompt_echo():
+    text = '"\nPercentile 10: 5 (lowest number value)\n' + "\n".join(
+        f"Percentile {p}: {v}" for p, v in [(20, 10), (40, 20), (60, 30), (80, 45)]
+    ) + '\nPercentile 90: 60 (highest number value)\n"'
+    assert [v for _, v in parse_percentiles(text)] == [5, 10, 20, 30, 45, 60]
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Status quo probability: 90%\nBase rate probability: 10%\nProbability: ~30%",
+        "Prior probability: 5%\nProbability: 0.35",
+        "Base-rate probability: 12%\nProbability of Yes: 40%",
+        "Earlier probability: 90%\nProbability: 20 percent",
+        "Probability: 20%\nLet me know if you need more.",
+    ],
+)
+def test_parse_binary_never_returns_an_earlier_number(text):
+    assert parse_binary(text) is None
+
+
+def test_parse_binary_markdown_label():
+    assert parse_binary("Status quo probability: 90%\n**Probability**: 20%") == pytest.approx(0.2)
+
+
+@pytest.mark.parametrize(
+    "options, answer, expected",
+    [
+        (["1", "2", "11", "12"], "1: 40%\n2: 10%\n11: 10%\n12: 40%", {"1": 0.4, "2": 0.1, "11": 0.1, "12": 0.4}),
+        (
+            ["0", "1-2", "3-5", "6-10", "More than 10"],
+            "0: 10%\n1-2: 30%\n3-5: 30%\n6-10: 10%\nMore than 10: 20%",
+            {"0": 0.1, "1-2": 0.3, "3-5": 0.3, "6-10": 0.1, "More than 10": 0.2},
+        ),
+        (
+            ["0", "1-9", "10-19", "20 or more"],
+            "0: 15%\n1-9: 30%\n10-19: 30%\n20 or more: 25%",
+            {"0": 0.15, "1-9": 0.3, "10-19": 0.3, "20 or more": 0.25},
+        ),
+        (["Red", "Blue"], "Final:\n1. Red: 70%\n2. Blue: 30%", {"Red": 0.7, "Blue": 0.3}),
+    ],
+)
+def test_parse_multiple_choice_numeric_labels(options, answer, expected):
+    assert parse_multiple_choice(answer, options) == pytest.approx(expected)
+
+
+def test_parse_multiple_choice_reads_only_the_final_block():
+    draft = "Red: 60%\nBlue: 30%\nGreen: 10%"
+    table = "| Red | 40% |\n| Blue | 45% |\n| Green | 15% |"
+    assert parse_multiple_choice(draft + "\n" + table, ["Red", "Blue", "Green"]) is None
+
+
+def test_floor_and_normalize_many_zeros():
+    probabilities = {f"o{i}": p for i, p in enumerate([0.6, 0.25, 0.15] + [0.0] * 11)}
+    floored = floor_and_normalize(probabilities)
+    assert sum(floored.values()) == pytest.approx(1.0)
+    assert min(floored.values()) >= 0.01 - 1e-12
+    assert floored["o0"] > floored["o1"] > floored["o2"] > floored["o3"]
+
+
+def test_floor_and_normalize_certain_option():
+    floored = floor_and_normalize({"a": 1.0, "b": 0.0, "c": 0.0})
+    assert floored == pytest.approx({"a": 0.98, "b": 0.01, "c": 0.01})
+
+
+@pytest.mark.parametrize(
+    "guard",
+    [
+        {"monthly_budget_usd": float("nan")},
+        {"max_run_cost_usd": float("inf")},
+        {"max_run_minutes": 0},
+        {"fallback_output_price_per_mtok": -1},
+    ],
+)
+def test_guard_numbers_must_be_finite_and_positive(guard):
+    with pytest.raises(ConfigError):
+        parse_config({**MINIMAL, "guard": guard})
+
+
+def test_seasonal_tournament_setting():
+    assert parse_config(MINIMAL).metaculus.seasonal_tournament is None
+    config = parse_config({**MINIMAL, "metaculus": {"seasonal_tournament": "spring-futureeval-2027"}})
+    assert config.metaculus.seasonal_tournament == "spring-futureeval-2027"

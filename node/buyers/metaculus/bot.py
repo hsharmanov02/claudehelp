@@ -11,6 +11,9 @@ from __future__ import annotations
 import asyncio
 import logging
 from datetime import datetime, timezone
+from typing import Callable
+
+from pydantic import BaseModel
 
 from forecasting_tools import (
     AskNewsSearcher,
@@ -19,6 +22,7 @@ from forecasting_tools import (
     DatePercentile,
     DateQuestion,
     ForecastBot,
+    ForecastReport,
     GeneralLlm,
     MetaculusQuestion,
     MultipleChoiceQuestion,
@@ -32,7 +36,7 @@ from forecasting_tools import (
     structure_output,
 )
 
-from node.aggregate import clamp, combine_binary, combine_multiple_choice
+from node.aggregate import clamp, combine_binary, combine_multiple_choice, floor_and_normalize
 from node.config import MetaculusSettings
 from node.parsing import (
     parse_binary,
@@ -44,6 +48,27 @@ from node.parsing import (
 logger = logging.getLogger(__name__)
 
 SUPPORTED_QUESTION_TYPES = (BinaryQuestion, MultipleChoiceQuestion, NumericQuestion, DateQuestion)
+
+QuestionResult = Callable[[MetaculusQuestion, ForecastReport | BaseException], None]
+
+
+class OptionProbability(BaseModel):
+    option_name: str
+    probability: float
+
+
+def option_list(probabilities: dict[str, float], options: list[str]) -> PredictedOptionList:
+    """Builds the submission, flooring every option to Metaculus' 1% minimum first.
+
+    The library's own validator rejects a forecast whose options move by more
+    than 5 points when it applies that minimum, which happens with many 0% options.
+    """
+    floored = floor_and_normalize({option: probabilities[option] for option in options})
+    return PredictedOptionList(
+        predicted_options=[
+            PredictedOption(option_name=option, probability=floored[option]) for option in options
+        ]
+    )
 
 
 def _today() -> str:
@@ -73,6 +98,7 @@ class NodeForecaster(ForecastBot):
         search: GeneralLlm | None,
         use_asknews: bool,
         max_concurrent_questions: int = 2,
+        on_question_done: QuestionResult | None = None,
         **kwargs,
     ) -> None:
         if not forecasters:
@@ -91,6 +117,7 @@ class NodeForecaster(ForecastBot):
         self._rotation: dict[str, int] = {}
         self._rotation_lock = asyncio.Lock()
         self._question_slots = asyncio.Semaphore(max_concurrent_questions)
+        self.on_question_done = on_question_done
         super().__init__(
             research_reports_per_question=1,
             predictions_per_research_report=settings.forecasts_per_question,
@@ -116,7 +143,23 @@ class NodeForecaster(ForecastBot):
 
     async def _run_individual_question_with_error_propagation(self, question):
         async with self._question_slots:
-            return await super()._run_individual_question_with_error_propagation(question)
+            try:
+                report = await super()._run_individual_question_with_error_propagation(question)
+            except Exception as error:
+                self._report_done(question, error)
+                raise
+            self._report_done(question, report)
+            return report
+
+    def _report_done(self, question, result) -> None:
+        # Called as soon as each question finishes (after publishing), so the
+        # ledger is current even if the run is stopped part way.
+        if self.on_question_done is None:
+            return
+        try:
+            self.on_question_done(question, result)
+        except Exception:
+            logger.exception(f"Recording the result for {question.page_url} failed.")
 
     async def _next_forecaster(self, question: MetaculusQuestion) -> GeneralLlm:
         key = str(question.id_of_question or question.page_url or question.question_text)
@@ -272,32 +315,36 @@ class NodeForecaster(ForecastBot):
         model, reasoning = await self._ask(question, prompt)
         probabilities = parse_multiple_choice(reasoning, question.options)
         if probabilities is None:
-            parsed: PredictedOptionList = await structure_output(
-                text_to_structure=reasoning,
-                output_type=PredictedOptionList,
-                model=self.get_llm("parser", "llm"),
-                additional_instructions=(
-                    f"Make sure that all option names are one of the following: {question.options}. "
-                    "Include options with 0% probability rather than skipping them."
-                ),
-            )
-            parsed_names = {o.option_name for o in parsed.predicted_options}
-            if parsed_names != set(question.options):
-                raise ValueError(
-                    f"Parsed options {sorted(parsed_names)} don't match {question.options}."
-                )
-            return ReasonedPrediction(
-                prediction_value=parsed, reasoning=f"*Model: {model}*\n\n{reasoning}"
-            )
-        option_list = PredictedOptionList(
-            predicted_options=[
-                PredictedOption(option_name=option, probability=probabilities[option])
-                for option in question.options
-            ]
-        )
+            probabilities = await self._parse_options_with_model(reasoning, question)
         return ReasonedPrediction(
-            prediction_value=option_list, reasoning=f"*Model: {model}*\n\n{reasoning}"
+            prediction_value=option_list(probabilities, question.options),
+            reasoning=f"*Model: {model}*\n\n{reasoning}",
         )
+
+    async def _parse_options_with_model(
+        self, reasoning: str, question: MultipleChoiceQuestion
+    ) -> dict[str, float]:
+        # Parsed into plain numbers rather than the library's PredictedOptionList,
+        # whose validator would reject answers with many 0% options before the
+        # node could floor them.
+        parsed: list[OptionProbability] = await structure_output(
+            text_to_structure=reasoning,
+            output_type=list[OptionProbability],
+            model=self.get_llm("parser", "llm"),
+            additional_instructions=(
+                f"Make sure that all option names are one of the following: {question.options}. "
+                "Give each probability as a decimal between 0 and 1. "
+                "Include options with 0% probability rather than skipping them."
+            ),
+        )
+        found = {p.option_name: p.probability for p in parsed}
+        if set(found) != set(question.options) or len(parsed) != len(question.options):
+            raise ValueError(f"Parsed options {sorted(found)} don't match {question.options}.")
+        total = sum(found.values())
+        # Decimals as asked, or percentages if the parser ignored that.
+        if not (0.95 <= total <= 1.05 or 95 <= total <= 105):
+            raise ValueError(f"Parsed option probabilities sum to {total}, not 1.")
+        return {option: p / total for option, p in found.items()}
 
     # ------------------------------------------------------------ numeric and date
 
@@ -384,9 +431,10 @@ class NodeForecaster(ForecastBot):
         )
         model, reasoning = await self._ask(question, prompt)
         pairs = parse_percentiles(reasoning)
-        if pairs is not None:
-            percentiles = [Percentile(percentile=p, value=v) for p, v in pairs]
-        else:
+        distribution = self._fast_distribution(
+            [Percentile(percentile=p, value=v) for p, v in pairs] if pairs else None, question
+        )
+        if distribution is None:
             percentiles = await structure_output(
                 reasoning,
                 list[Percentile],
@@ -398,7 +446,7 @@ class NodeForecaster(ForecastBot):
                     "explicitly given, do not invent them."
                 ),
             )
-        distribution = NumericDistribution.from_question(percentiles, question)
+            distribution = NumericDistribution.from_question(percentiles, question)
         return ReasonedPrediction(
             prediction_value=distribution, reasoning=f"*Model: {model}*\n\n{reasoning}"
         )
@@ -457,9 +505,11 @@ class NodeForecaster(ForecastBot):
         )
         model, reasoning = await self._ask(question, prompt)
         pairs = parse_date_percentiles(reasoning)
-        if pairs is not None:
-            percentiles = [Percentile(percentile=p, value=d.timestamp()) for p, d in pairs]
-        else:
+        distribution = self._fast_distribution(
+            [Percentile(percentile=p, value=d.timestamp()) for p, d in pairs] if pairs else None,
+            question,
+        )
+        if distribution is None:
             date_percentiles: list[DatePercentile] = await structure_output(
                 reasoning,
                 list[DatePercentile],
@@ -474,10 +524,24 @@ class NodeForecaster(ForecastBot):
                 Percentile(percentile=p.percentile, value=p.value.timestamp())
                 for p in date_percentiles
             ]
-        distribution = NumericDistribution.from_question(percentiles, question)
+            distribution = NumericDistribution.from_question(percentiles, question)
         return ReasonedPrediction(
             prediction_value=distribution, reasoning=f"*Model: {model}*\n\n{reasoning}"
         )
+
+    @staticmethod
+    def _fast_distribution(
+        percentiles: list[Percentile] | None, question: NumericQuestion | DateQuestion
+    ) -> NumericDistribution | None:
+        """The distribution from the node's own parser, or None to use the model parser."""
+        if percentiles is None:
+            return None
+        try:
+            return NumericDistribution.from_question(percentiles, question)
+        except Exception as error:
+            # For example values in the wrong units, all outside the range.
+            logger.info(f"Parsed percentiles rejected for {question.page_url}: {error}")
+            return None
 
     # ------------------------------------------------------------ aggregation
 
@@ -495,12 +559,7 @@ class NodeForecaster(ForecastBot):
             combined = combine_multiple_choice(
                 forecasts, question.options, floor=self.settings.mc_floor
             )
-            return PredictedOptionList(
-                predicted_options=[
-                    PredictedOption(option_name=option, probability=combined[option])
-                    for option in question.options
-                ]
-            )
+            return option_list(combined, question.options)
         return await super()._aggregate_predictions(predictions, question)
 
     async def _run_forecast_on_conditional(self, question, research):

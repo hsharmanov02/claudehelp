@@ -4,8 +4,11 @@ on:
   workflow_dispatch:
     inputs:
       questions:
-        description: "Number of open questions to benchmark on (costs model money)"
-        default: "60"
+        description: "Open questions to benchmark on"
+        default: "10"
+      budget_usd:
+        description: "Total model spend for all variants, in dollars (also limited by the monthly cap)"
+        default: "20"
 
 permissions:
   contents: write
@@ -16,20 +19,20 @@ concurrency:
 
 jobs:
   benchmark:
+    if: vars.NODE_KILL != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-          cache: pip
-      - name: Install
-        run: pip install -e .
+      - uses: ./.github/actions/setup
       - name: Load ledger
         run: scripts/load_ledger.sh
       - name: Benchmark
-        run: python -m node.improve.benchmark --questions "${{ inputs.questions }}"
+        run: >-
+          exec python -m node.improve.benchmark
+          --questions "${{ inputs.questions }}"
+          --budget-usd "${{ inputs.budget_usd }}"
+          --minutes 100
         env:
           METACULUS_TOKEN: ${{ secrets.METACULUS_TOKEN }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}

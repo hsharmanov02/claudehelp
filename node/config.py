@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -18,6 +19,7 @@ ALLOWED_TARGETS = frozenset({"seasonal", "minibench", "bot-testing-area"})
 class GuardSettings:
     monthly_budget_usd: float = 100.0
     max_run_cost_usd: float = 10.0
+    max_run_minutes: float = 40.0
     fallback_input_price_per_mtok: float = 5.0
     fallback_output_price_per_mtok: float = 25.0
 
@@ -35,8 +37,10 @@ class MetaculusSettings:
     forecasts_per_question: int = 6
     binary_aggregation: str = "geo_mean_odds"
     extremize: float = 1.0
-    mc_floor: float = 0.005
+    mc_floor: float = 0.01
     skip_already_forecasted: bool = True
+    # Overrides the forecasting library's built-in ID for the current season.
+    seasonal_tournament: str | int | None = None
 
 
 @dataclass(frozen=True)
@@ -65,8 +69,16 @@ def parse_config(raw: dict) -> NodeConfig:
     meta_raw = raw.get("metaculus", {})
 
     guard = GuardSettings(**guard_raw)
-    if guard.monthly_budget_usd <= 0 or guard.max_run_cost_usd <= 0:
-        raise ConfigError("Budgets must be positive numbers.")
+    for name in (
+        "monthly_budget_usd",
+        "max_run_cost_usd",
+        "max_run_minutes",
+        "fallback_input_price_per_mtok",
+        "fallback_output_price_per_mtok",
+    ):
+        value = getattr(guard, name)
+        if not isinstance(value, (int, float)) or not math.isfinite(value) or value <= 0:
+            raise ConfigError(f"[guard].{name} must be a positive number.")
 
     forecasters = tuple(tuple(slot) for slot in models_raw.get("forecasters", []))
     if not forecasters or any(not slot for slot in forecasters):
@@ -89,14 +101,17 @@ def parse_config(raw: dict) -> NodeConfig:
             raise ConfigError(
                 f"Unknown target '{target}'. Allowed: {sorted(ALLOWED_TARGETS)}."
             )
-    metaculus = MetaculusSettings(**{**meta_raw, "targets": targets})
+    seasonal = meta_raw.get("seasonal_tournament") or None
+    metaculus = MetaculusSettings(
+        **{**meta_raw, "targets": targets, "seasonal_tournament": seasonal}
+    )
     if metaculus.forecasts_per_question < 1:
         raise ConfigError("[metaculus].forecasts_per_question must be at least 1.")
     if metaculus.binary_aggregation not in ("geo_mean_odds", "median"):
         raise ConfigError('binary_aggregation must be "geo_mean_odds" or "median".')
-    if not 0.5 <= metaculus.extremize <= 3.0:
+    if not math.isfinite(metaculus.extremize) or not 0.5 <= metaculus.extremize <= 3.0:
         raise ConfigError("extremize must be between 0.5 and 3.0.")
-    if not 0 <= metaculus.mc_floor < 0.1:
+    if not math.isfinite(metaculus.mc_floor) or not 0 <= metaculus.mc_floor < 0.1:
         raise ConfigError("mc_floor must be between 0 and 0.1.")
 
     return NodeConfig(

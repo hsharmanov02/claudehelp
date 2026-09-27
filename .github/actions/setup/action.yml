@@ -1,0 +1,23 @@
+name: Set up the node
+description: Python plus a cached virtual environment, so an idle run stays under a billed minute.
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-python@v5
+      id: python
+      with:
+        python-version: "3.11"
+    - uses: actions/cache@v4
+      id: venv
+      with:
+        path: .venv
+        key: venv-${{ runner.os }}-${{ steps.python.outputs.python-version }}-${{ hashFiles('pyproject.toml') }}
+    - name: Install
+      if: steps.venv.outputs.cache-hit != 'true'
+      shell: bash
+      run: |
+        python -m venv .venv
+        .venv/bin/pip install -q -e ".[dev]"
+    - name: Use the environment
+      shell: bash
+      run: echo "$PWD/.venv/bin" >> "$GITHUB_PATH"

@@ -17,12 +17,13 @@ Feb–Mar 2027.
 
 ## What it does
 
-Every 30 minutes, GitHub Actions runs the node:
+Once you switch it on, GitHub Actions runs the node every hour:
 
 1. **Checks its guards.** It stops if the kill switch is on or this month's model
    spend has reached the cap in `node.toml`.
 2. **Collects open questions** from the current seasonal tournament and MiniBench,
-   skipping ones it has already forecast and question types it doesn't support.
+   skipping ones the ledger shows it already forecast and question types it
+   doesn't support.
 3. **Researches** each question with AskNews (if configured) and a web-search
    model, in parallel.
 4. **Forecasts with three model families** (Anthropic, OpenAI, Google by default),
@@ -33,8 +34,10 @@ Every 30 minutes, GitHub Actions runs the node:
 6. **Writes everything to the ledger**: each forecast, error and dollar spent.
 
 The prompts are Metaculus' own Fall 2026 template prompts. The node's edge comes
-from the multi-vendor ensemble, better aggregation, combined research, and
-reading answers without an extra model call.
+from the multi-vendor ensemble, better aggregation and combined research. When a
+model ends its answer in exactly the requested format, the node reads it
+directly; anything else (units like "million", extra text) goes to a model-based
+parser, as in the official template.
 
 ## Setup
 
@@ -52,28 +55,42 @@ reading answers without an extra model call.
    your bot's profile.
 5. **Go live**: add a repository *variable* `NODE_PUBLISH` = `true`
    (Settings → Secrets and variables → Actions → Variables). Until then the
-   30-minute runs are dry runs that forecast but don't post.
+   hourly job is skipped and costs nothing.
 
-Private repos get 2,000 free Actions minutes a month; a run takes a few minutes,
-so if you hit the limit, lower the schedule in `.github/workflows/forecast.yaml`
-or make the repo public.
+**Actions minutes.** Keep the repo private: the ledger holds the bot's forecasts
+on open questions, and in a public repo anyone could copy them. Private repos on
+GitHub's free plan get 2,000 Actions minutes a month. The hourly schedule is
+about 720 runs; a run with nothing to forecast takes under a minute (the Python
+environment is cached), and forecasting adds a few minutes per new question, so
+expect roughly 1,000 to 1,500 minutes a month. MiniBench questions stay open for
+about three hours, so hourly runs get each one. Check usage under Settings →
+Billing; if you have more minutes, `"11,41 * * * *"` in
+`.github/workflows/forecast.yaml` runs every 30 minutes.
 
 ## Switches and limits
 
 | What | Where | Effect |
 | --- | --- | --- |
-| Go live | variable `NODE_PUBLISH=true` | Real forecasts are posted |
-| Kill switch | variable `NODE_KILL=true`, or a file named `KILL` | Every run exits before doing anything |
-| Monthly cap | `[guard].monthly_budget_usd` in `node.toml` | No runs once tracked model spend reaches it |
+| Go live | variable `NODE_PUBLISH=true` | The hourly job runs and posts real forecasts |
+| Kill switch | variable `NODE_KILL=true`, or a committed file named `KILL` | Jobs are skipped, or exit before doing anything |
+| Monthly cap | `[guard].monthly_budget_usd` in `node.toml` | No runs once this month's recorded spend reaches it |
 | Per-run cap | `[guard].max_run_cost_usd` | Model calls are refused once a run reaches it |
+| Run time limit | `[guard].max_run_minutes` | A run stops, keeps what it finished, and leaves the rest for the next run |
+| New season | `[metaculus].seasonal_tournament` | Points "seasonal" at a tournament slug or ID |
 
-Model spend is tracked per call. If a model is too new for the price list, it is
-charged at the fallback rate in `node.toml` so the caps still hold.
+Every model call's cost goes into the ledger the moment the call returns, so a
+cancelled or timed-out run still counts toward the monthly cap. If a model is too
+new for the price list, it is charged at the fallback rate in `node.toml` (set to
+the most expensive model's price) so the caps still hold. Calls already in flight
+when a cap is reached still finish, so a cap can be exceeded by a few calls.
 
 ## The ledger
 
 Every run appends JSON lines to `ledger/YYYY-MM.jsonl` on the `node-data`
-branch. Nothing is ever rewritten. Useful commands:
+branch: one `spend` line per model call, one `forecast` or `forecast_error` line
+per question, and `run_started` / `run_finished` lines. Nothing is ever
+rewritten. If the branch can't be read, the run stops rather than start from an
+empty ledger. Useful commands:
 
 ```bash
 python -m node status        # kill switch, publishing, budget, last run
@@ -85,10 +102,13 @@ A dashboard can read the ledger straight from the `node-data` branch.
 
 ## Improving it
 
-`python -m node.improve.benchmark --questions 60` (or the "Benchmark variants"
-workflow) scores variants of the settings against the community forecast on
-open questions. It costs model money, so it only runs by hand. Change
-`node.toml` only when a variant wins on a large sample.
+`python -m node.improve.benchmark --questions 10 --budget-usd 20` (or the
+"Benchmark variants" workflow) scores variants of the settings against the
+community forecast on open questions. Each variant gets an equal share of the
+budget and time, and all are scored on the questions every variant finished. It
+costs model money and counts toward the monthly cap, so it only runs by hand.
+Ten questions is a smoke test; change `node.toml` only when a variant wins on a
+large sample (100+ questions).
 
 ## Rules the node follows
 
@@ -96,6 +116,9 @@ open questions. It costs model money, so it only runs by hand. Change
 - No human edits to individual forecasts. Changing code or settings is fine.
 - Bots are banned from human tournaments such as the Metaculus Cup; the config
   refuses them.
+- Every forecast needs its reasoning posted as a comment. If a forecast went up
+  but its comment didn't, the ledger has no record of it and the next run
+  forecasts the question again, posting both.
 - Prize winners must pass Metaculus' identity and tax checks. That part is yours.
 
 ## Development
@@ -106,3 +129,7 @@ python -m pytest
 cp .env.template .env        # then fill in keys for local runs
 python -m node -v run metaculus --mode test   # dry run on the practice tournament
 ```
+
+Tests replace only the network request inside the forecasting library, so the
+spending cap, cost accounting and parsers run for real.
+

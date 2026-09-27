@@ -55,6 +55,8 @@ def cmd_run(args, config, ledger) -> int:
     )
     for error in summary.errors[:10]:
         print(f"  error: {error}")
+    spent = ledger.spend_for_month()
+    print(f"This month: ${spent:.2f} of ${config.guard.monthly_budget_usd:.2f} spent.")
     return 1 if summary.all_failed else 0
 
 

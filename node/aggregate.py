@@ -42,10 +42,46 @@ def combine_binary(
     raise ValueError(f"Unknown binary aggregation method: {method}")
 
 
-def combine_multiple_choice(
-    forecasts: Sequence[Mapping[str, float]], options: Sequence[str], floor: float = 0.005
+# Metaculus accepts multiple-choice forecasts only when every option has at
+# least 1%, so forecasts are floored to this before they are submitted.
+MC_MIN = 0.01
+
+
+def floor_and_normalize(
+    probabilities: Mapping[str, float], floor: float = MC_MIN
 ) -> dict[str, float]:
-    """Average each option's probability across forecasts, floor, renormalize."""
+    """Scales probabilities to sum to 1 with every option at or above `floor`.
+
+    Options below the floor are set to it and the rest are scaled down to make
+    room, repeating until nothing is left below the floor.
+    """
+    if not probabilities:
+        raise ValueError("No probabilities to normalize.")
+    if floor * len(probabilities) >= 1:
+        raise ValueError(f"A floor of {floor} leaves no room for {len(probabilities)} options.")
+    if any(p < 0 or math.isnan(p) for p in probabilities.values()):
+        raise ValueError("Probabilities must be non-negative numbers.")
+    floored: set[str] = set()
+    while True:
+        free = [k for k in probabilities if k not in floored]
+        room = 1.0 - floor * len(floored)
+        free_total = sum(probabilities[k] for k in free)
+        if free_total <= 0:
+            share = room / len(free)
+            scaled = {k: share for k in free}
+        else:
+            scaled = {k: probabilities[k] / free_total * room for k in free}
+        below = [k for k, p in scaled.items() if p < floor]
+        if not below:
+            break
+        floored.update(below)
+    return {k: (floor if k in floored else scaled[k]) for k in probabilities}
+
+
+def combine_multiple_choice(
+    forecasts: Sequence[Mapping[str, float]], options: Sequence[str], floor: float = MC_MIN
+) -> dict[str, float]:
+    """Average each option's probability across forecasts, then floor and renormalize."""
     if not forecasts:
         raise ValueError("No forecasts to combine.")
     for forecast in forecasts:
@@ -55,6 +91,4 @@ def combine_multiple_choice(
     averaged = {
         option: sum(f[option] for f in forecasts) / len(forecasts) for option in options
     }
-    floored = {option: max(p, floor) for option, p in averaged.items()}
-    total = sum(floored.values())
-    return {option: p / total for option, p in floored.items()}
+    return floor_and_normalize(averaged, max(floor, MC_MIN))

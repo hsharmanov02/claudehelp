@@ -3,7 +3,9 @@ name: Forecast on tournament questions
 on:
   workflow_dispatch:
   schedule:
-    - cron: "11,41 * * * *" # every 30 minutes
+    # Hourly keeps a private repo inside GitHub's 2,000 free Actions minutes a
+    # month. On a public repo (minutes are free) "11,41 * * * *" runs every 30.
+    - cron: "11 * * * *"
 
 permissions:
   contents: write # to save the ledger to the node-data branch
@@ -14,34 +16,32 @@ concurrency:
 
 jobs:
   forecast:
+    # Repository variables (Settings > Secrets and variables > Actions > Variables).
+    # Nothing runs, and no minutes are used, until NODE_PUBLISH is "true".
+    # NODE_KILL=true stops it again. Dry runs are the "Test bot" workflow's job.
+    if: vars.NODE_PUBLISH == 'true' && vars.NODE_KILL != 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    # The node stops itself after [guard].max_run_minutes (40), leaving time to
+    # save the ledger.
+    timeout-minutes: 55
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 1
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-          cache: pip
-      - name: Install
-        run: pip install -e .
+      - uses: ./.github/actions/setup
       - name: Load ledger
         run: scripts/load_ledger.sh
       - name: Run the node
-        run: python -m node run metaculus --publish
+        # exec, so a cancel or timeout signal reaches Python and it can record
+        # what it spent before exiting.
+        run: exec python -m node run metaculus --publish
         env:
           METACULUS_TOKEN: ${{ secrets.METACULUS_TOKEN }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           ASKNEWS_CLIENT_ID: ${{ secrets.ASKNEWS_CLIENT_ID }}
           ASKNEWS_SECRET: ${{ secrets.ASKNEWS_SECRET }}
-          # Repository variables (Settings > Secrets and variables > Actions > Variables).
-          # NODE_PUBLISH=true turns on real forecasts; NODE_KILL=true stops the node.
           NODE_PUBLISH: ${{ vars.NODE_PUBLISH }}
           NODE_KILL: ${{ vars.NODE_KILL }}
-      - name: Status
-        if: always()
-        run: python -m node status
       - name: Save ledger
         if: always()
         run: scripts/save_ledger.sh

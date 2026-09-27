@@ -2,19 +2,20 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 from dataclasses import dataclass, field
 from typing import Callable
 
-from forecasting_tools import ForecastReport, GeneralLlm, MetaculusClient, MetaculusQuestion
+from forecasting_tools import ForecastReport, MetaculusClient, MetaculusQuestion
 from forecasting_tools.ai_models.resource_managers.monetary_cost_manager import (
     MonetaryCostManager,
 )
 
 from node.buyers.metaculus.bot import SUPPORTED_QUESTION_TYPES, NodeForecaster
 from node.config import NodeConfig
-from node.costs import install_fallback_tracker
+from node.costs import CappedLlm, recording_spend
 from node.ledger import Ledger
 from node.models import ResolvedModels, resolve_models
 
@@ -40,9 +41,11 @@ class RunSummary:
         return attempted > 0 and self.forecasts_made == 0
 
 
-def tournament_ids(targets: tuple[str, ...], client: MetaculusClient) -> list[int | str]:
+def tournament_ids(
+    targets: tuple[str, ...], client: MetaculusClient, seasonal_override: str | int | None = None
+) -> list[int | str]:
     mapping = {
-        "seasonal": client.CURRENT_AI_COMPETITION_ID,
+        "seasonal": seasonal_override or client.CURRENT_AI_COMPETITION_ID,
         "minibench": client.CURRENT_MINIBENCH_ID,
         "bot-testing-area": TEST_TOURNAMENT,
     }
@@ -57,15 +60,19 @@ def asknews_configured() -> bool:
 
 
 def build_forecaster(
-    config: NodeConfig, models: ResolvedModels, publish: bool, client: MetaculusClient
+    config: NodeConfig,
+    models: ResolvedModels,
+    publish: bool,
+    client: MetaculusClient | None,
+    on_question_done=None,
 ) -> NodeForecaster:
     forecasters = [
-        GeneralLlm(model=models.with_route(name), timeout=300, allowed_tries=2)
+        CappedLlm(model=models.with_route(name), timeout=300, allowed_tries=2)
         for name in models.forecasters
     ]
-    helper = GeneralLlm(model=models.with_route(models.helper), timeout=120, allowed_tries=2)
+    helper = CappedLlm(model=models.with_route(models.helper), timeout=120, allowed_tries=2)
     search = (
-        GeneralLlm(model=models.with_route(models.search), timeout=180, allowed_tries=2)
+        CappedLlm(model=models.with_route(models.search), timeout=180, allowed_tries=2)
         if models.search
         else None
     )
@@ -77,6 +84,7 @@ def build_forecaster(
         use_asknews=asknews_configured(),
         publish_reports_to_metaculus=publish,
         metaculus_client=client,
+        on_question_done=on_question_done,
     )
 
 
@@ -105,7 +113,8 @@ class MetaculusBuyer:
         questions: list[MetaculusQuestion] = []
         seen_ids: set = set()
         skipped = 0
-        for tournament in tournament_ids(targets, self.client):
+        tournaments = tournament_ids(targets, self.client, self.config.metaculus.seasonal_tournament)
+        for tournament in tournaments:
             for question in self.client.get_all_open_questions_from_tournament(tournament):
                 key = question.id_of_question or question.page_url
                 if key in seen_ids:
@@ -117,11 +126,33 @@ class MetaculusBuyer:
                 questions.append(question)
         return questions, skipped
 
+    def already_done(self, questions: list[MetaculusQuestion], publish: bool) -> set:
+        """Questions the node doesn't need to forecast again.
+
+        The ledger is the record: a live run skips questions it has published
+        to, and a dry run also skips ones it has dry-run before, so repeated dry
+        runs don't pay for the same forecasts again. A question Metaculus shows
+        as forecast but the ledger doesn't (for example the forecast went up but
+        its required reasoning comment failed) is forecast again, which posts
+        both. Dry runs also trust Metaculus' flag, since they can't fix anything.
+        """
+        published, dry = set(), set()
+        for entry in self.ledger.entries():
+            if entry.get("kind") == "forecast" and entry.get("buyer") == BUYER:
+                (published if entry.get("published") else dry).add(entry.get("question_id"))
+        done = set()
+        for question in questions:
+            qid = question.id_of_question
+            if qid in published or (not publish and (qid in dry or question.already_forecasted)):
+                done.add(qid)
+        return done
+
     async def run(self, mode: str, publish: bool, run_budget_usd: float) -> RunSummary:
         if mode not in ("tournament", "test"):
             raise ValueError(f"Unknown mode: {mode}")
         summary = RunSummary(mode=mode, published=publish)
         models = self.model_resolver()
+        guard = self.config.guard
         self.ledger.append(
             "run_started",
             buyer=BUYER,
@@ -133,37 +164,43 @@ class MetaculusBuyer:
             search=models.search,
             asknews=asknews_configured(),
         )
-        install_fallback_tracker(
-            self.config.guard.fallback_input_price_per_mtok,
-            self.config.guard.fallback_output_price_per_mtok,
-        )
-        recorded_cost = 0.0
-        with MonetaryCostManager(run_budget_usd) as run_costs:
+
+        def record_spend(cost: float, model: str) -> None:
+            self.ledger.append("spend", buyer=BUYER, cost_usd=round(cost, 6), model=model)
+
+        def record_result(question, result) -> None:
+            self._record(question, result, publish, summary)
+
+        with recording_spend(
+            record_spend, guard.fallback_input_price_per_mtok, guard.fallback_output_price_per_mtok
+        ), MonetaryCostManager(run_budget_usd) as run_costs:
             try:
                 questions, skipped = self.collect_questions(mode)
                 summary.questions_seen = len(questions) + skipped
                 summary.questions_skipped = skipped
-                bot = self.forecaster_factory(self.config, models, publish, self.client)
-                if mode == "test":
-                    # The test tournament is for checking the pipeline end to
-                    # end, so re-forecast even questions seen before.
-                    bot.skip_previously_forecasted_questions = False
-                if bot.skip_previously_forecasted_questions:
-                    already = [q for q in questions if q.already_forecasted]
-                    summary.questions_skipped += len(already)
-                    questions = [q for q in questions if not q.already_forecasted]
-                    bot.skip_previously_forecasted_questions = False
-                reports = await bot.forecast_questions(questions, return_exceptions=True)
-                for question, report in zip(questions, reports):
-                    recorded_cost += self._record(question, report, publish, summary)
+                bot = self.forecaster_factory(
+                    self.config, models, publish, self.client, on_question_done=record_result
+                )
+                # Skipping is decided here, from the ledger, not by the library.
+                skip = mode == "tournament" and bot.skip_previously_forecasted_questions
+                bot.skip_previously_forecasted_questions = False
+                if skip:
+                    done = self.already_done(questions, publish)
+                    summary.questions_skipped += sum(q.id_of_question in done for q in questions)
+                    questions = [q for q in questions if q.id_of_question not in done]
+                # Stop before the job's own timeout so the ledger is saved and
+                # unfinished questions are picked up by the next run.
+                try:
+                    async with asyncio.timeout(guard.max_run_minutes * 60):
+                        await bot.forecast_questions(questions, return_exceptions=True)
+                except TimeoutError:
+                    unfinished = len(questions) - summary.forecasts_made - len(summary.errors)
+                    summary.errors.append(
+                        f"Stopped at the {guard.max_run_minutes:g}-minute limit; "
+                        f"{unfinished} questions left for the next run."
+                    )
             finally:
                 summary.cost_usd = run_costs.current_usage
-                unrecorded = max(0.0, summary.cost_usd - recorded_cost)
-                if unrecorded > 0:
-                    # Research or failed questions that produced no report still cost money.
-                    self.ledger.append(
-                        "spend", buyer=BUYER, cost_usd=round(unrecorded, 6), note="unattributed"
-                    )
                 self.ledger.append(
                     "run_finished",
                     buyer=BUYER,
@@ -183,7 +220,7 @@ class MetaculusBuyer:
         report: ForecastReport | BaseException,
         publish: bool,
         summary: RunSummary,
-    ) -> float:
+    ) -> None:
         if isinstance(report, BaseException):
             message = f"{type(report).__name__}: {report}"[:500]
             summary.errors.append(f"{question.page_url}: {message}")
@@ -194,9 +231,10 @@ class MetaculusBuyer:
                 url=question.page_url,
                 error=message,
             )
-            return 0.0
+            return
         summary.forecasts_made += 1
-        cost = float(report.price_estimate or 0.0)
+        # The cost is already in the ledger as individual "spend" entries;
+        # it is repeated here only for reading.
         self.ledger.append(
             "forecast",
             buyer=BUYER,
@@ -207,12 +245,7 @@ class MetaculusBuyer:
             tournaments=question.tournament_slugs,
             prediction=report.make_readable_prediction(report.prediction),
             published=publish,
-            cost_usd=round(cost, 6),
+            cost_usd=round(float(report.price_estimate or 0.0), 6),
             minutes=round(float(report.minutes_taken or 0.0), 2),
             partial_errors=len(report.errors or []),
         )
-        if cost > 0:
-            self.ledger.append(
-                "spend", buyer=BUYER, cost_usd=round(cost, 6), question_id=question.id_of_question
-            )
-        return cost
