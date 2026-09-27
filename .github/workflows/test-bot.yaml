@@ -1,0 +1,40 @@
+name: Test bot on the practice tournament
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: node-run
+  cancel-in-progress: false
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install
+        run: pip install -e .
+      - name: Load ledger
+        run: scripts/load_ledger.sh
+      - name: Forecast on the bot-testing-area tournament
+        run: python -m node -v run metaculus --mode test --publish
+        env:
+          METACULUS_TOKEN: ${{ secrets.METACULUS_TOKEN }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          ASKNEWS_CLIENT_ID: ${{ secrets.ASKNEWS_CLIENT_ID }}
+          ASKNEWS_SECRET: ${{ secrets.ASKNEWS_SECRET }}
+          # Posting to the practice tournament is harmless and proves the whole
+          # pipeline works, so this workflow always publishes there.
+          NODE_PUBLISH: "true"
+          NODE_KILL: ${{ vars.NODE_KILL }}
+      - name: Save ledger
+        if: always()
+        run: scripts/save_ledger.sh

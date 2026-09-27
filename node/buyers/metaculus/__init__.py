@@ -1,0 +1,1 @@
+"""Metaculus FutureEval bot tournaments."""

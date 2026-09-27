@@ -1,0 +1,41 @@
+name: Benchmark variants
+
+on:
+  workflow_dispatch:
+    inputs:
+      questions:
+        description: "Number of open questions to benchmark on (costs model money)"
+        default: "60"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: node-run
+  cancel-in-progress: false
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install
+        run: pip install -e .
+      - name: Load ledger
+        run: scripts/load_ledger.sh
+      - name: Benchmark
+        run: python -m node.improve.benchmark --questions "${{ inputs.questions }}"
+        env:
+          METACULUS_TOKEN: ${{ secrets.METACULUS_TOKEN }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          ASKNEWS_CLIENT_ID: ${{ secrets.ASKNEWS_CLIENT_ID }}
+          ASKNEWS_SECRET: ${{ secrets.ASKNEWS_SECRET }}
+          NODE_KILL: ${{ vars.NODE_KILL }}
+      - name: Save ledger
+        if: always()
+        run: scripts/save_ledger.sh
