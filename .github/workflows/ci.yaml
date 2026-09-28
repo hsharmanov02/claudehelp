@@ -2,8 +2,15 @@ name: Tests
 
 on:
   push:
-    branches-ignore: [node-data]
+    branches: [main]
+    paths: ["forecaster/**", ".github/**"]
   pull_request:
+    paths: ["forecaster/**", ".github/**"]
+
+defaults:
+  run:
+    # The forecaster lives in its own folder; the rest of the repo is the PC node.
+    working-directory: forecaster
 
 jobs:
   test:

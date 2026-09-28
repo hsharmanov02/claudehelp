@@ -14,6 +14,11 @@ concurrency:
   group: node-run
   cancel-in-progress: false
 
+defaults:
+  run:
+    # The forecaster lives in its own folder; the rest of the repo is the PC node.
+    working-directory: forecaster
+
 jobs:
   forecast:
     # Repository variables (Settings > Secrets and variables > Actions > Variables).

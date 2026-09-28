@@ -1,5 +1,9 @@
-name: Set up the node
+name: Set up the forecaster
 description: Python plus a cached virtual environment, so an idle run stays under a billed minute.
+inputs:
+  directory:
+    description: Folder holding the forecaster's pyproject.toml
+    default: forecaster
 runs:
   using: composite
   steps:
@@ -10,14 +14,16 @@ runs:
     - uses: actions/cache@v4
       id: venv
       with:
-        path: .venv
-        key: venv-${{ runner.os }}-${{ steps.python.outputs.python-version }}-${{ hashFiles('pyproject.toml') }}
+        path: ${{ inputs.directory }}/.venv
+        key: venv-${{ runner.os }}-${{ steps.python.outputs.python-version }}-${{ hashFiles(format('{0}/pyproject.toml', inputs.directory)) }}
     - name: Install
       if: steps.venv.outputs.cache-hit != 'true'
       shell: bash
+      working-directory: ${{ inputs.directory }}
       run: |
         python -m venv .venv
         .venv/bin/pip install -q -e ".[dev]"
     - name: Use the environment
       shell: bash
+      working-directory: ${{ inputs.directory }}
       run: echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
