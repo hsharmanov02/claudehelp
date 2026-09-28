@@ -1,0 +1,9 @@
+{
+  "name": "income-node-local-payments",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Local receiving wallet and read-only Coinbase authentication checks",
+  "dependencies": {
+    "ethers": "6.17.0"
+  }
+}

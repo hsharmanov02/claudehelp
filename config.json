@@ -1,0 +1,34 @@
+{
+  "schema_version": 2,
+  "node_id": "AUTOPROTOCOL-NODE-01",
+  "dashboard_port": 8899,
+  "heartbeat_interval_seconds": 20,
+  "mode": "observe",
+  "upfront_spend_limit": 0,
+  "monero": {
+    "enabled": false,
+    "public_address": "",
+    "xmrig_api": "http://127.0.0.1:18088/2/summary",
+    "wallet_rpc": "http://127.0.0.1:18083/json_rpc",
+    "daemon_rpc": "http://127.0.0.1:18081/json_rpc",
+    "account_index": 0,
+    "minimum_confirmations": 60,
+    "history_from_height": 0
+  },
+  "pilot": {
+    "allow_cpu_work": false,
+    "xmrig_binary": "",
+    "xmrig_sha256": "",
+    "p2pool_binary": "",
+    "p2pool_sha256": "",
+    "duration_seconds": 1800,
+    "threads": 1,
+    "pause_on_active_seconds": 120,
+    "api_port": 18088,
+    "stratum_port": 3333
+  },
+  "economics": {
+    "electricity_gbp_per_kwh": null,
+    "incremental_watts": null
+  }
+}
