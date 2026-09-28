@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Protocol Buyer Lab</title><link rel="stylesheet" href="/static/style.css"></head>
+<body><main>
+<header><div><p class="eyebrow">AUTOPROTOCOL / LOCAL LAB</p><h1>A payment must leave evidence.</h1>
+<p class="intro">A zero-upfront-spend experiment in protocol-funded work.</p></div>
+<div class="connection"><span id="connection">Connecting</span><br><span id="updated"></span></div></header>
+<section class="notice"><strong id="mode">Observe mode</strong><p id="notice">Waiting for evidence snapshot.</p></section>
+<section class="metrics">
+<div><h2>Wallet-reported mined XMR</h2><p class="number" id="xmr">Unknown</p><p>Unlocked receipts in the configured wallet history. Not cash profit.</p></div>
+<div><h2>Measured miner work</h2><p class="number" id="hashrate">Unknown</p><p id="shares">No worker connected.</p></div>
+<div><h2>Net cash profit</h2><p class="number">Unknown</p><p>Requires attributable receipts, conversion proceeds, costs and fees.</p></div>
+</section>
+<div class="columns">
+<section><h2>Current experiment</h2><div id="experiment"></div>
+<h3>What the evidence means</h3><ol class="steps"><li>Official software performs useful or consensus work.</li><li>A protocol or customer accepts the work.</li><li>A wallet or account records an actual receipt.</li><li>Costs and conversion determine whether there is cash profit.</li></ol>
+<p class="fine">An HTTP success, an accepted mining share, or an airdrop point cannot establish step 3 or 4.</p>
+<h3>Next actions</h3><div id="ideas"></div></section>
+<aside><h2>Resource &amp; pilot controls</h2><dl id="resources"></dl>
+<p class="fine">CPU is measured for the observer only. Worker and GPU utilization are not measured. Pilot configuration disables GPU mining; it does not enforce a total CPU or wattage ceiling.</p>
+<h3>Local integrations</h3><div id="integrations"></div></aside>
+</div>
+<section class="research"><div class="section-title"><h2>Protocol buyer shortlist</h2><span>Primary-source review · 27 September 2026</span></div>
+<p>Reviewed candidates, not deployed services. Demand-funded marketplaces retain buyer uncertainty.</p>
+<div class="filters" role="group" aria-label="Filter opportunities"><button data-filter="all" class="selected">All candidates</button><button data-filter="issuance">Protocol issuance</button><button data-filter="demand">Customer demand</button></div>
+<div id="catalog"></div></section>
+<section><h2>Observation log</h2><pre id="logs"></pre></section>
+<footer>Local only · No automatic purchases or wallet transactions · Points carry no demonstrated cash value</footer>
+</main><script src="/static/app.js"></script></body></html>
+

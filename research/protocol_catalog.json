@@ -1,0 +1,129 @@
+{
+  "reviewed_at": "2026-09-27",
+  "kind": "Manually reviewed primary sources; not a live discovery feed",
+  "candidates": [
+    {
+      "id": "monero_p2pool",
+      "name": "Monero + P2Pool",
+      "mechanism": "Protocol issuance",
+      "priority": 1,
+      "decision": "Best mechanism fit; pilot prerequisites unmet",
+      "upfront": "No token purchase or stake; existing hardware required",
+      "work": "CPU proof of work using a synced Monero node, P2Pool and an official miner",
+      "payment": "XMR directly to receiving wallet when eligible pool shares receive block rewards",
+      "uncertainty": "Share/block luck, electricity, hardware efficiency and conversion value. No guaranteed first-payment time.",
+      "next_step": "Configure receiving wallet and official clients; run a bounded one-thread pilot.",
+      "sources": [
+        {
+          "title": "Monero mining",
+          "url": "https://www.getmonero.org/get-started/mining/"
+        },
+        {
+          "title": "P2Pool implementation and payout rules",
+          "url": "https://github.com/SChernykh/p2pool"
+        }
+      ]
+    },
+    {
+      "id": "golem",
+      "name": "Golem provider",
+      "mechanism": "Customer-funded marketplace",
+      "priority": 2,
+      "decision": "Conditional second experiment",
+      "upfront": "Provider installation lists no token stake; cash-out gas is a separate cost",
+      "work": "Rent CPU/RAM through official Yagna provider on x86-64 Linux/KVM",
+      "payment": "GLM paid by requestors for agreed compute usage",
+      "uncertainty": "Customer demand and provider selection remain. Windows/WSL setups are unsupported.",
+      "next_step": "Check supported Linux/KVM environment and actual task demand before deployment.",
+      "sources": [
+        {
+          "title": "Provider installation",
+          "url": "https://docs.golem.network/docs/providers/provider-installation"
+        },
+        {
+          "title": "Provider FAQ",
+          "url": "https://docs.golem.network/docs/providers/provider-faq"
+        },
+        {
+          "title": "Golem payment flow",
+          "url": "https://docs.golem.network/docs/golem/overview"
+        }
+      ]
+    },
+    {
+      "id": "honeygain",
+      "name": "Honeygain",
+      "mechanism": "Customer-funded bandwidth resale",
+      "priority": 3,
+      "decision": "Optional service; does not remove demand uncertainty",
+      "upfront": "Existing connection/device; account and payout terms required",
+      "work": "Official client relays customer traffic through the connection",
+      "payment": "Account credits subject to provider payout terms; no fixed traffic rate assumed",
+      "uncertainty": "Demand varies by region. Sharing IP connectivity has practical consequences; no spoofed heartbeats.",
+      "next_step": "Review current account/payout and connection-sharing terms before enabling.",
+      "sources": [
+        {
+          "title": "Current traffic rate and demand",
+          "url": "https://support.honeygain.com/hc/en-us/articles/360013231420-What-is-the-current-traffic-rate"
+        },
+        {
+          "title": "Why earnings fluctuate",
+          "url": "https://support.honeygain.com/hc/en-us/articles/360011188719-Why-did-my-traffic-and-earnings-suddenly-decrease"
+        }
+      ]
+    },
+    {
+      "id": "bittensor",
+      "name": "Bittensor miner",
+      "mechanism": "Competitive protocol emissions",
+      "priority": 4,
+      "decision": "Exclude from strict zero-token-spend bootstrap",
+      "upfront": "Subnet registration charges TAO; cost and possible collateral vary",
+      "work": "Compete under a specific subnet's scoring rules",
+      "payment": "Performance-dependent emissions; registration and retention required",
+      "uncertainty": "Entry cost, score competition, eviction and token value",
+      "next_step": "Research only after a separately approved budget exists.",
+      "sources": [
+        {
+          "title": "Mining requirements",
+          "url": "https://www.bittensor.com/docs/guides/mining"
+        },
+        {
+          "title": "Registration pricing",
+          "url": "https://www.bittensor.com/docs/guides/mining/burn"
+        }
+      ]
+    },
+    {
+      "id": "nosana",
+      "name": "Nosana",
+      "mechanism": "Customer-funded GPU marketplace",
+      "priority": 5,
+      "decision": "Defer; zero-capital eligibility not established",
+      "upfront": "Supported GPU plus current host/staking/transaction requirements must be verified",
+      "work": "Run customer GPU containers",
+      "payment": "NOS via the marketplace protocol",
+      "uncertainty": "Available jobs, hardware compatibility, energy and current entry requirements",
+      "next_step": "Do not budget or deploy until official host requirements and costs are verified.",
+      "sources": [
+        {
+          "title": "Official network description",
+          "url": "https://www.nosana.com/terms-and-conditions/"
+        }
+      ]
+    },
+    {
+      "id": "legacy_points",
+      "name": "Grass / Nodepay / DAWN / Gradient / Bless",
+      "mechanism": "Reward schemes not validated here",
+      "priority": 6,
+      "decision": "Research only; previous adapters were not integrations",
+      "upfront": "Not established by this investigation",
+      "work": "Requires each project's official client, registration and rules",
+      "payment": "No account credits, token receipts or fiat conversion evidenced in this workspace",
+      "uncertainty": "Old prototype locally invented points and dollar exchange rates.",
+      "next_step": "Assess each separately against the same evidence gate; points count as no demonstrated cash revenue.",
+      "sources": []
+    }
+  ]
+}
