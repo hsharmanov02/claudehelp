@@ -47,11 +47,19 @@ class AutoProtocolNodeEngine:
         metrics = self.limiter.get_metrics()
         self.hub.update(protocols=protocols, system_metrics=metrics,
                         expansion_ideas=self.expander.evaluate_and_expand(protocols, metrics),
-                        pilot=self.pilot.telemetry())
+                        pilot=self.pilot.telemetry(), watchdog=self.watchdog_status())
         self.hub.save_snapshot()
         return self.hub.get_full_state()
 
-    def start(self, run_pilot=False, duration=None):
+    def watchdog_status(self):
+        path = ROOT / "runtime" / "watchdog_status.json"
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {"state": "not_supervised"}
+        return {k: data.get(k) for k in ("state", "restarts", "last_reason", "updated_at")}
+
+    def start(self, run_pilot=False, duration=None, stop_file=None):
         server = create_dashboard_server(self.hub, self.port)
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
@@ -74,6 +82,9 @@ class AutoProtocolNodeEngine:
                 next_cycle = 0
                 import time
                 while not self.stop_event.wait(1):
+                    if stop_file is not None and Path(stop_file).exists():
+                        self.hub.add_log("ENGINE", "INFO", "Stop requested by supervisor.")
+                        break
                     if run_pilot and not self.pilot.tick():
                         self.hub.add_log("PILOT", "INFO", self.pilot.status)
                         break
@@ -104,6 +115,7 @@ def main():
     parser.add_argument("--config", type=Path, default=ROOT / "config.json")
     parser.add_argument("--port", type=int)
     parser.add_argument("--duration", type=int, help="Stop observer after this many seconds")
+    parser.add_argument("--stop-file", type=Path, help="Stop cleanly when this file appears (used by watchdog.py)")
     args = parser.parse_args()
     if args.once and args.pilot:
         parser.error("--once and --pilot are mutually exclusive")
@@ -114,7 +126,7 @@ def main():
         if args.once:
             print(json.dumps(node.cycle(), indent=2))
         else:
-            node.start(run_pilot=args.pilot, duration=args.duration)
+            node.start(run_pilot=args.pilot, duration=args.duration, stop_file=args.stop_file)
     except KeyboardInterrupt:
         print("Stopped.")
     except (ValueError, OSError) as exc:

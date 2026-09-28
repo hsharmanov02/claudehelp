@@ -1,10 +1,22 @@
 """Read-only localhost dashboard; Python standard library, no downloaded UI assets."""
 import json
+import os
+import socket
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlsplit
 
 STATIC = Path(__file__).resolve().parent / "static"
+
+class ExclusiveHTTPServer(ThreadingHTTPServer):
+    """Fails if the port is taken. SO_REUSEADDR on Windows would let a second node share it silently."""
+    allow_reuse_address = os.name != "nt"
+
+    def server_bind(self):
+        if os.name == "nt":
+            self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        super().server_bind()
+
 
 def create_dashboard_server(hub, port=8899):
     class Handler(BaseHTTPRequestHandler):
@@ -40,7 +52,7 @@ def create_dashboard_server(hub, port=8899):
                 pass
         def log_message(self, *args):
             pass
-    server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
+    server = ExclusiveHTTPServer(("127.0.0.1", port), Handler)
     server.daemon_threads = True
     return server
 

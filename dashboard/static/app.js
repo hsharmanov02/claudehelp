@@ -42,7 +42,7 @@ function render(data){
   }
   el("resources").replaceChildren();
   const m=data.system_metrics;
-  for(const [k,v] of [["Observer CPU",m.process_cpu_pct==null?"Unknown":m.process_cpu_pct+"% of one core"],["Priority",m.priority??"Unknown"],["Logical CPUs",m.logical_cpus??"Unknown"],["Pilot",data.pilot.status],["Upfront spending","Disabled"],["Electricity tariff",data.economics.electricity_gbp_per_kwh==null?"Not provided":"£"+data.economics.electricity_gbp_per_kwh+"/kWh"]])append(el("resources"),node("dt",k),node("dd",String(v)));
+  for(const [k,v] of [["Observer CPU",m.process_cpu_pct==null?"Unknown":m.process_cpu_pct+"% of one core"],["Priority",m.priority??"Unknown"],["Logical CPUs",m.logical_cpus??"Unknown"],["Pilot",data.pilot.status],["Watchdog",data.watchdog?(data.watchdog.state+(data.watchdog.restarts?" · "+data.watchdog.restarts+" restart(s)":"")):"Not supervised"],["Upfront spending","Disabled"],["Electricity tariff",data.economics.electricity_gbp_per_kwh==null?"Not provided":"£"+data.economics.electricity_gbp_per_kwh+"/kWh"]])append(el("resources"),node("dt",k),node("dd",String(v)));
   el("integrations").replaceChildren();
   for(const p of data.protocols.filter(p=>p.name!=="Monero / P2Pool")){
     const item=node("div",undefined,"integration"); append(item,node("strong",p.name),node("span",p.status+" — "+p.reason)); el("integrations").appendChild(item);

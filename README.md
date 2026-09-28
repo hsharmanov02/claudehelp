@@ -37,6 +37,28 @@ python -m unittest discover -s tests -v
 
 The default configuration makes no external network requests and launches no earning workloads. It reads the sourced local shortlist and periodically writes `node_state.json`. It does not install a startup task. Stop a foreground run with Ctrl+C. If launched in the background, use its recorded observer process ID; do not stop unrelated Python processes.
 
+## Keep it running (watchdog)
+
+`watchdog.py` supervises the node for unattended use:
+
+- **Crash restart:** relaunches the node with exponential backoff (5 s doubling to 5 min). The backoff resets after 10 healthy minutes. If the node exits 5 times within 10 minutes, the watchdog cools down for 30 minutes and then keeps trying.
+- **Hang detection:** if `node_state.json` stops updating for more than max(120 s, 4 × heartbeat interval), the node counts as hung and is replaced. After the PC sleeps, the node gets a fresh grace period instead of being killed.
+- **Fail-closed process tree:** on Windows the node runs inside a kill-on-close Job Object. Any XMRig/P2Pool clients it starts are terminated with it, including if the watchdog itself is killed. Mining clients cannot be left running unsupervised.
+- **Clean shutdown:** stopping asks the node to exit through its normal path (pilot clients stop first), then force-stops after 20 s.
+- **One instance only:** one watchdog per folder, and the dashboard refuses a port that is already in use, so two nodes cannot silently share it.
+
+```text
+python watchdog.py            # run in the foreground
+python watchdog.py --status   # last status (also shown on the dashboard)
+python watchdog.py --stop     # stop the node and the watchdog
+```
+
+Logs: `runtime/watchdog.log` (watchdog) and `runtime/node.log` (node output).
+
+**Start at logon (optional, explicit):** `powershell -File install_watchdog.ps1 -StartNow` registers a per-user Scheduled Task named `ProtocolBuyerWatchdog`. It needs no admin rights and runs only while you are logged in. Remove it with `install_watchdog.ps1 -Uninstall`.
+
+The watchdog does not bypass the pilot's 30-minute limit. It supervises the observer, and continuous mainnet mining is a separate configuration decision.
+
 ## Prepare a real pilot
 
 The concrete launch gate requires:
@@ -51,7 +73,7 @@ Then run `python node_engine.py --pilot`.
 
 The wrapper checks binary hashes, mainnet sync, the receiving address and wallet match. It starts its own P2Pool mini and XMRig clients. The miner uses one idle-priority thread, light RandomX, no GPU backends, no MSR changes, pauses on battery and recent user activity, and has a maximum 30-minute pilot duration. Light mode intentionally sacrifices performance for lower memory use. XMRig's 1% development donation is retained. P2Pool also uses CPU/network resources; the one-thread limit is for mining, not total system load.
 
-The clients stop at the pilot deadline, normal shutdown or client failure. Existing Monero daemon/wallet services are not stopped. Do not confuse a software time limit with a wattage limit. An OS crash or forced observer termination needs separate process supervision before unattended production use.
+The clients stop at the pilot deadline, normal shutdown or client failure. Existing Monero daemon/wallet services are not stopped. Do not confuse a software time limit with a wattage limit. Use `watchdog.py` for supervision: it restarts the node and guarantees that its clients die with it.
 
 A 30-minute pilot validates setup and measured work, **not a promised payout**. P2Pool shares and block discovery are stochastic. No automatic purchases, withdrawals, swaps, deposits or paid scaling are implemented.
 
