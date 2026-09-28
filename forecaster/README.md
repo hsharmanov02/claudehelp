@@ -123,7 +123,11 @@ large sample (100+ questions).
 
 ## Development
 
+Everything below runs from this `forecaster/` folder; the rest of the repository
+is the separate PC node. The workflows in `.github/workflows/` run here too.
+
 ```bash
+cd forecaster
 pip install -e ".[dev]"
 python -m pytest
 cp .env.template .env        # then fill in keys for local runs
