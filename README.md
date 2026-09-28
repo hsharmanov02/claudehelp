@@ -88,3 +88,7 @@ For planning, incremental electricity cost is `extra watts / 1000 × hours × ta
 
 Tests cover accounting boundaries, invalid data, local RPC restrictions, disabled workload gates, hash pinning, normal time-limit cleanup and dashboard serving. They do not demonstrate mainnet earnings or test installed mining clients.
 
+
+## Metaculus forecasting bot
+
+The tournament forecasting bot is in [`forecaster/`](forecaster/README.md). It runs on GitHub Actions, separately from this local node, and has its own setup steps and spending caps.

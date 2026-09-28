@@ -1,0 +1,41 @@
+name: Test bot on the practice tournament
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: node-run
+  cancel-in-progress: false
+
+defaults:
+  run:
+    # The forecaster lives in its own folder; the rest of the repo is the PC node.
+    working-directory: forecaster
+
+jobs:
+  test:
+    if: vars.NODE_KILL != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+      - name: Load ledger
+        run: scripts/load_ledger.sh
+      - name: Forecast on the bot-testing-area tournament
+        run: exec python -m node -v run metaculus --mode test --publish
+        env:
+          METACULUS_TOKEN: ${{ secrets.METACULUS_TOKEN }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          ASKNEWS_CLIENT_ID: ${{ secrets.ASKNEWS_CLIENT_ID }}
+          ASKNEWS_SECRET: ${{ secrets.ASKNEWS_SECRET }}
+          # Posting to the practice tournament is harmless and proves the whole
+          # pipeline works, so this workflow always publishes there.
+          NODE_PUBLISH: "true"
+          NODE_KILL: ${{ vars.NODE_KILL }}
+      - name: Save ledger
+        if: always()
+        run: scripts/save_ledger.sh

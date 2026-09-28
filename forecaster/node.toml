@@ -1,0 +1,65 @@
+# Protocol Buyer Node configuration.
+# Secrets never go here: they come from environment variables or GitHub secrets.
+
+[node]
+# Where the append-only ledger lives. In GitHub Actions this folder is the
+# `node-data` branch, checked out by the workflow.
+ledger_dir = "data/ledger"
+
+[guard]
+# Hard cap on tracked model spend per calendar month (UTC), in US dollars.
+# Donated tournament credits count toward it too, because the node can't tell
+# them apart from paid ones.
+monthly_budget_usd = 100.0
+# Hard cap for a single run of the node. Calls are refused once it is reached;
+# calls already in flight at that moment still finish, so a run can go over by
+# about a dozen calls' worth (usually well under $2).
+max_run_cost_usd = 10.0
+# A run stops itself after this many minutes, keeps what it finished, and
+# leaves the rest for the next run. Keep it below the workflow's timeout (55).
+max_run_minutes = 40.0
+# Used only when the model library can't price a call (for example a model
+# released after its price list). Dollars per million tokens.
+fallback_input_price_per_mtok = 5.0
+fallback_output_price_per_mtok = 25.0
+
+[models]
+# Models are reached through OpenRouter (OPENROUTER_API_KEY), which is how
+# Metaculus hands out donated tournament credits.
+# Each forecaster slot lists models in order of preference. The first one that
+# the provider currently serves is used, so new model names can be added at the
+# front without breaking older setups.
+forecasters = [
+    ["anthropic/claude-opus-5", "anthropic/claude-sonnet-5", "anthropic/claude-opus-4.8", "anthropic/claude-opus-4.7", "anthropic/claude-sonnet-4.6"],
+    ["openai/gpt-5.6", "openai/gpt-5.5", "openai/gpt-5.2", "openai/gpt-5"],
+    ["google/gemini-3.5-pro", "google/gemini-3.1-pro-preview", "google/gemini-3-pro-preview", "google/gemini-2.5-pro"],
+]
+# Cheap model used to summarize research and, only when needed, to read a
+# forecast that the node's own parser couldn't read.
+helper = ["openai/gpt-5-mini", "openai/gpt-4.1-mini", "openai/gpt-4o-mini"]
+# Model used for web research when AskNews isn't configured.
+search = ["openai/gpt-4o-search-preview", "perplexity/sonar-pro"]
+
+[metaculus]
+# Tournaments the node enters. Bots are not allowed in human tournaments such
+# as the Metaculus Cup, so those are refused.
+targets = ["seasonal", "minibench"]
+# "seasonal" means the season built into the forecasting library version in
+# pyproject.toml (Fall 2026: 28 Sep 2026 to 6 Jan 2027). When a new season
+# starts, either upgrade that library or put the new tournament's slug or ID
+# here, for example "spring-futureeval-2027". Empty uses the library's.
+seasonal_tournament = ""
+# How many forecasts to make per question. They are spread evenly across the
+# forecaster slots above, then combined.
+forecasts_per_question = 6
+# How binary forecasts are combined: "geo_mean_odds" or "median".
+binary_aggregation = "geo_mean_odds"
+# Values above 1 push the combined binary forecast away from 50%. Leave at 1.0
+# unless a benchmark shows it helps.
+extremize = 1.0
+# Probability floor for each multiple-choice option. Metaculus requires at
+# least 0.01 (1%), so lower values have no effect.
+mc_floor = 0.01
+# Skip questions the ledger shows were already forecast (each question is
+# scored once). Dry runs also skip questions they dry-ran before.
+skip_already_forecasted = true
