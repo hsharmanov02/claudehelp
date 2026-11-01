@@ -567,16 +567,28 @@ class Browser:
         return f"Fetched {self.url} ({ctype}, {len(body)} chars{', cut' if cut else ''}):\n{body[:max_chars]}"
 
     def search(self, query: str) -> str:
-        self.navigate("https://html.duckduckgo.com/html/?q=" + urllib.parse.quote(query))
-        res = self.eval(r"""JSON.stringify([...document.querySelectorAll('.result')].slice(0, 10).map(r => {
-            const a = r.querySelector('a.result__a'); const s = r.querySelector('.result__snippet');
-            let href = a ? a.href : ''; try { const u = new URL(href); if (u.searchParams.get('uddg')) href = u.searchParams.get('uddg'); } catch (e) {}
-            return { title: a ? a.innerText.trim() : '', url: href, snippet: s ? s.innerText.trim() : '' }; }))""")
-        items = json.loads(res or "[]")
-        if not items:
-            return "Search results:\n" + self.describe(4000)
-        return f'Web search results for "{query}":\n' + "\n".join(
-            f"{i + 1}. {r['title']}\n   {r['url']}\n   {r['snippet'][:200]}" for i, r in enumerate(items))
+        """Web search in the real browser: Bing first, then DuckDuckGo (which sometimes shows a CAPTCHA)."""
+        q = urllib.parse.quote(query)
+        engines = [
+            ("Bing", f"https://www.bing.com/search?q={q}&setlang=en", r"""JSON.stringify([...document.querySelectorAll('#b_results > li.b_algo')].slice(0, 10).map(r => {
+                const a = r.querySelector('h2 a'); const s = r.querySelector('.b_caption p, .b_lineclamp2, .b_lineclamp3, .b_algoSlug');
+                return { title: a ? a.innerText.trim() : '', url: a ? a.href : '', snippet: s ? s.innerText.trim() : '' }; }))"""),
+            ("DuckDuckGo", f"https://html.duckduckgo.com/html/?q={q}", r"""JSON.stringify([...document.querySelectorAll('.result')].slice(0, 10).map(r => {
+                const a = r.querySelector('a.result__a'); const s = r.querySelector('.result__snippet');
+                let href = a ? a.href : ''; try { const u = new URL(href); if (u.searchParams.get('uddg')) href = u.searchParams.get('uddg'); } catch (e) {}
+                return { title: a ? a.innerText.trim() : '', url: href, snippet: s ? s.innerText.trim() : '' }; }))"""),
+        ]
+        for name, url, js in engines:
+            try:
+                self.navigate(url)
+                items = [r for r in json.loads(self.eval(js) or "[]") if r.get("title") and r.get("url")]
+            except Exception:
+                items = []
+            if items:
+                return f'Web search results for "{query}" ({name}):\n' + "\n".join(
+                    f"{i + 1}. {r['title']}\n   {r['url']}\n   {r['snippet'][:220]}" for i, r in enumerate(items))
+        return f'No search results could be read for "{query}" (the search page may be asking for a CAPTCHA). ' \
+               "Current page:\n" + self.describe(3000)
 
     def screenshot_wait(self, since: int, timeout=20):
         with self.frame_cond:

@@ -14,9 +14,9 @@ from .fileindex import FileIndex
 from .models import ModelStore
 
 FILE_WORDS = re.compile(
-    r"\b(file|files|folder|folders|director(y|ies)|drive|disk|storage|download|downloads|desktop|document|documents|"
-    r"photo|photos|picture|pictures|image|images|screenshot|screenshots|video|videos|music|song|songs|audio|pdf|pdfs|"
-    r"exe|zip|find|search|locate|where|list|open|read|show me|look in|in my|on my (pc|computer|laptop))\b", re.I)
+    r"\b(files?|folders?|director(y|ies)|my (drive|disk|pc|computer|laptop)|downloads?|desktop|documents?|"
+    r"photos?|pictures?|images?|screenshots?|videos?|music|songs?|audio|pdfs?|spreadsheets?|exe|zip|"
+    r"on my (pc|computer|laptop)|in my \w+ folder)\b", re.I)
 WIN_PATH = re.compile(r"[A-Za-z]:\\[^\s\"'`<>|*?]*")
 WEB_WORDS = re.compile(r"\b(web|online|internet|browser|browse|website|site|google|url|http|https|www|news|weather|price|prices)\b", re.I)
 NIX_PATH = re.compile(r"(?<![\w])/(?:home|Users|mnt|tmp|var|opt)/[^\s\"'`]+")
