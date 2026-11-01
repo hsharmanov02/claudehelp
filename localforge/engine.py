@@ -206,6 +206,7 @@ class Engine:
             raise RuntimeError("No model is loaded")
         self._stop.clear()
         self.last_tps = 0.0
+        self.last_finish = ""
         body = json.dumps({
             "messages": messages, "stream": True, "max_tokens": max_tokens, "temperature": temperature,
             "cache_prompt": True, "timings_per_token": False,
@@ -238,6 +239,8 @@ class Engine:
                     self.last_tps = float(t.get("predicted_per_second") or 0)
                     self.last_prompt_tps = float(t.get("prompt_per_second") or 0)
                 for ch in obj.get("choices") or []:
+                    if ch.get("finish_reason"):
+                        self.last_finish = ch["finish_reason"]
                     delta = ch.get("delta") or {}
                     if delta.get("reasoning_content"):
                         if not thinking:

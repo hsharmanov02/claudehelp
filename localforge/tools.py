@@ -153,6 +153,10 @@ Rules:
 - Your answer must match the run/browser output exactly. Copy numbers and rows from it; never invent results.
   If the output doesn't show what was asked, say so and fix it instead of claiming success.
 - Do any sum, average or percentage in code, never in your head.
+- To extract data from a web page, never retype the page into code. Use <js> with document.querySelectorAll on the
+  live page and return JSON; first check the real class names with a small <js> before writing the full extractor.
+- Signs, up/down and done/completed often show only as colour or icons: use the "Visual cues" section of the page.
+- Only save a file when the user asks for one. To save extracted data, generate it with code that you actually run.
 - If a check returns 0, empty, or an error, your code is broken: fix it and test again before reporting.
 - Before your final answer, check the output against EVERY part of the question. If a part is missing or wrong, fix it.
   Never claim something worked or was saved unless the output shows it.

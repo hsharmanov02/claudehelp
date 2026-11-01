@@ -28,7 +28,7 @@ COOKIE_JS = r"""(() => {
   const words = /^(reject all|reject all cookies|reject|decline|decline all|refuse all|necessary only|only necessary|use necessary cookies only|essential only|only essential cookies|continue without accepting)$/i;
   const roots = [document, ...[...document.querySelectorAll('iframe')].map(f => { try { return f.contentDocument; } catch (e) { return null; } }).filter(Boolean)];
   for (const d of roots) {
-    for (const b of d.querySelectorAll('button, [role=button], a')) {
+    for (const b of d.querySelectorAll('button, [role=button], a, input[type=submit], input[type=button]')) {
       const t = (b.innerText || b.value || '').trim().replace(/\s+/g, ' ');
       if (t && t.length < 45 && words.test(t)) { b.click(); return t; }
     }
@@ -77,8 +77,30 @@ SNAPSHOT_JS = r"""
     }
     out.push('[' + n + '] ' + kind + ' "' + label + '"' + extra);
   }
-  const text = (document.body ? document.body.innerText : '').replace(/\n{3,}/g, '\n\n').trim();
-  return JSON.stringify({ url: location.href, title: document.title, text, elements: out });
+  let text = (document.body ? document.body.innerText : '').replace(/\n{3,}/g, '\n\n').trim();
+  // Meaning shown only by style: struck-through (done) items and red/down numbers lose it in plain text.
+  const struck = [], down = [], up = [];
+  for (const el of document.querySelectorAll('body *')) {
+    if (struck.length + down.length + up.length > 80) break;
+    if (!el.childNodes.length || el.children.length > 3) continue;
+    const t = (el.innerText || '').trim().replace(/\s+/g, ' ');
+    if (!t || t.length > 80) continue;
+    const cs = getComputedStyle(el);
+    if (cs.textDecorationLine.includes('line-through')) { struck.push(t); continue; }
+    if (/%|[\d.,]+/.test(t) && t.length < 25) {
+      const cls = ((el.className && el.className.baseVal !== undefined ? el.className.baseVal : el.className) || '') + ' ' +
+                  ((el.querySelector('i,svg,span') || {}).className || '');
+      const c = cs.color.match(/\d+/g) || [0, 0, 0];
+      const red = +c[0] > 150 && +c[1] < 110 && +c[2] < 110, green = +c[1] > 130 && +c[0] < 110;
+      if (/down|neg|loss|decrease|fall|red|danger/i.test(cls) || red || /^[▼↓]/.test(t)) down.push(t);
+      else if (/\bup\b|pos|gain|increase|rise|green|success/i.test(cls) || green || /^[▲↑]/.test(t)) up.push(t);
+    }
+  }
+  const cues = [];
+  if (struck.length) cues.push('Struck through (e.g. done/completed): ' + struck.slice(0, 30).join(' | '));
+  if (down.length) cues.push('Shown as negative/down (red or down arrow): ' + down.slice(0, 40).join(' | '));
+  if (up.length) cues.push('Shown as positive/up (green or up arrow): ' + up.slice(0, 40).join(' | '));
+  return JSON.stringify({ url: location.href, title: document.title, text, elements: out, cues });
 })()
 """
 
@@ -458,6 +480,9 @@ class Browser:
         """Closes cookie banners by choosing the privacy-friendly option (reject / necessary only), never accept."""
         try:
             hit = self.eval(COOKIE_JS, 5)
+            if not hit:
+                time.sleep(1.0)     # many banners appear a moment after the page loads
+                hit = self.eval(COOKIE_JS, 5)
             if hit:
                 time.sleep(0.6)
         except Exception:
@@ -515,7 +540,9 @@ class Browser:
         d = self.snapshot(max_text)
         els = "\n".join(e[:110] for e in d["elements"][:70])
         problems = self.console_text(only_problems=True, limit=15) if console else ""
+        cues = "\n".join(d.get("cues") or [])
         return (f"Browser page: {d['title']}\nURL: {d['url']}\n\nPage text:\n{d['text'] or '(empty)'}\n\n"
+                + (f"Visual cues (meaning shown by colour/style, not in the text):\n{cues[:1500]}\n\n" if cues else "") +
                 f"Clickable / fillable elements (use their numbers):\n{els or '(none)'}"
                 + (f"\n\nConsole errors/warnings on this page:\n{problems}" if problems else ""))
 

@@ -19,6 +19,22 @@ FILE_WORDS = re.compile(
     r"on my (pc|computer|laptop)|in my \w+ folder)\b", re.I)
 WIN_PATH = re.compile(r"[A-Za-z]:\\[^\s\"'`<>|*?]*")
 WEB_WORDS = re.compile(r"\b(web|online|internet|browser|browse|website|site|google|url|http|https|www|news|weather|price|prices)\b", re.I)
+PRIVATE = re.compile(r"passw|passwd|creds?\b|credential|secret|token|api.?key|private.?key|seed.?phrase|wallet|\.env\b|\.pem\b|\.kdbx", re.I)
+
+
+def _hide_private(listing: str) -> str:
+    """Automatic file context never includes names that look like passwords or keys (the user can still ask)."""
+    lines, hidden = [], 0
+    for line in listing.split("\n"):
+        if PRIVATE.search(line) and not line.startswith(("Contents of", "Best matches")):
+            hidden += 1
+            continue
+        lines.append(line)
+    if hidden:
+        lines.append(f"({hidden} private-looking file name(s) left out)")
+    return "\n".join(lines)
+
+
 NIX_PATH = re.compile(r"(?<![\w])/(?:home|Users|mnt|tmp|var|opt)/[^\s\"'`]+")
 
 
@@ -307,13 +323,24 @@ class App:
                 parts.append(tools.execute(tools.Action("read", str(p)), self.index))
         lower = text.lower()
         home = Path.home()
+        # Relative paths like "Documents\LocalForge": list that exact folder, not its parent.
+        for m in re.finditer(r"\b([A-Za-z][\w .-]*(?:[\\/][\w .-]+)+)", text):
+            cand = m.group(1).strip().rstrip(".,)?!").strip()
+            p = home / cand
+            while not p.is_dir() and " " in cand.split("/")[0].split("\\")[0]:
+                cand = cand.split(" ", 1)[1]          # drop leading words: "files in Documents\X" -> "Documents\X"
+                p = home / cand
+            if p.is_dir() and str(p) not in used:
+                used.add(str(p))
+                used.update(str(x) for x in p.parents)
+                parts.append(tools.execute(tools.Action("list", str(p)), self.index))
         try:
             for d in os.scandir(home):
                 if not d.is_dir() or d.name.startswith("."):
                     continue
                 n = d.name.lower()
                 if re.search(rf"\b{re.escape(n)}s?\b", lower) or (n == "downloads" and "download" in lower):
-                    if d.path not in used:
+                    if d.path not in used and not any(u.startswith(d.path + os.sep) for u in used):
                         used.add(d.path)
                         parts.append(tools.execute(tools.Action("list", d.path), self.index))
         except OSError:
@@ -323,7 +350,7 @@ class App:
             parts.append("Best matches on the PC:\n" + self.index.format(hits))
         if not parts:
             parts.append("Nothing matched by name. " + self.index.overview())
-        return "\n\n".join(parts)[:12000]
+        return _hide_private("\n\n".join(parts))[:12000]
 
     CHARS_PER_TOKEN = 2.6     # web pages and code tokenise worse than prose; stay on the safe side
     OLD_RESULT_CHARS = 1200   # older tool results are cut to this; the newest one stays whole
@@ -422,8 +449,8 @@ class App:
             reply["stats"] = f"{self.engine.last_tps:.1f} tokens/sec"
             self.touch()
             if self._looks_broken(reply["text"]):
-                self._msg("note", "This reply looks like gibberish. The model file may be too heavily compressed (Q2/Q3) "
-                                  "or broken. Download a Q4_K_M or better version from the Models tab.")
+                self._msg("note", "This reply looks like gibberish. Try asking again; if it keeps happening, the model "
+                                  "file may be broken. Download it again from the Models tab.")
                 break
             if self.stop_requested:
                 self._msg("note", "Stopped.")
@@ -438,6 +465,11 @@ class App:
                 if self.repeats >= 3:
                     break
                 continue
+            if getattr(self.engine, "last_finish", "") == "length":
+                self._msg("tool", "Your reply was cut off because it was too long, so nothing in it was done. "
+                                  "Use shorter steps. Never retype page text into code: read data from the live page "
+                                  "with <js> and document.querySelectorAll.")
+                continue
             actions = tools.parse(full)
             if not any(a.kind == "run" for a in actions) and not self.ran_code and not self.repeats:
                 # Only before any code ran: later, code blocks in a final answer are examples, not requests.
@@ -449,6 +481,7 @@ class App:
                                                                   for a in actions):
                 actions = []
             if not actions:
+                self._check_claims(reply)
                 if re.search(r"<run\b", full, re.I):
                     self._msg("tool", "Your <run> tag had no code in it. Put the whole program between "
                                       "<run lang=\"...\"> and </run>.")
@@ -465,6 +498,8 @@ class App:
                     a = self._fix_url(a)
                 if waiting and not (a.is_browser and not a.browser_read and reply["actions"] and
                                     reply["actions"][-1]["action"]["kind"] in ("batch",) + tools.BROWSER_KINDS):
+                    rest = actions[actions.index(a):]
+                    reply["actions"][-1]["queued"] = [x.to_dict() for x in rest]
                     break
                 key = (a.kind, a.path, a.content)
                 site = self._site_for(a)
@@ -648,6 +683,20 @@ class App:
                     pa["result"] = tools.execute(a, self.index)
                     self._msg("tool", pa["result"])
                     self._files_changed(a)
+                # Steps the model wrote after this card (e.g. open the page it just wrote) run now.
+                queued = pa.pop("queued", [])
+                outs = []
+                for q in queued:
+                    qa = tools.Action(q["kind"], q["path"], q["content"], q.get("extra", ""))
+                    if qa.read_only:
+                        outs.append(tools.execute(qa, self.index))
+                    elif qa.browser_read:
+                        outs.append(tools.execute_browser(qa, self.browser))
+                    else:
+                        outs.append(f"Not done yet: {qa.label}. Ask for it again if you still need it.")
+                        break
+                if outs:
+                    self._msg("tool", "\n\n".join(outs))
                 # Carry on once every card in that reply has been answered.
                 waiting = msg and any(x["status"] == "pending" for x in msg["actions"])
                 if self.engine.loaded and not waiting:
@@ -704,6 +753,27 @@ class App:
         if len(matches) == 1:
             return tools.Action(a.kind, matches[0], a.content, a.extra)
         return a
+
+    CLAIMS = re.compile(r"ran successfully|run successfully|executed successfully|server received|"
+                        r"(saved|written|created) (it |the file |the csv |successfully)|tests? (all )?pass", re.I)
+
+    def _check_claims(self, reply):
+        """Warns the user when the answer claims success that no tool output in this request shows."""
+        if not self.CLAIMS.search(tools.prose_of(reply["text"])):
+            return
+        since = []
+        for m in reversed(self.messages):
+            if m["role"] == "user":
+                break
+            if m["role"] in ("run", "tool"):
+                since.append(m)
+        ok_run = any(m["role"] == "run" and m["text"].startswith("✓") for m in since)
+        ok_tool = any(m["role"] == "tool" and re.match(r"(Saved|Created|Typed and submitted|Did \d+ of)", m["text"]) for m in since)
+        last = since[0] if since else None
+        failed_last = last is not None and (last["text"].startswith("✗") or "error" in last["text"][:200].lower())
+        if (not ok_run and not ok_tool) or failed_last:
+            self._msg("note", "⚠ LocalForge couldn't confirm this: no successful run or saved file in this "
+                              "request matches what the answer says. Check the result before relying on it.")
 
     @staticmethod
     def _add_to_batch(pa, a: tools.Action):
@@ -790,7 +860,7 @@ class App:
         if len(text) < 60:
             return False
         prose = re.sub(r"```[\s\S]*?(```|$)", "", text)
-        prose = re.sub(r"<(write|run)[\s\S]*?(</\1>|$)", "", prose)
+        prose = tools.prose_of(prose)
         if len(prose) < 60:
             return False
         letters = sum(1 for c in prose if c.isalpha() or c == " ")
