@@ -58,7 +58,7 @@ def work_dir() -> Path:
 
 
 DEFAULTS = {
-    "nCtx": 8192,
+    "nCtx": 16384,         # with a q8 cache this costs about the same memory as 8192 used to
     "threads": 0,          # 0 = automatic
     "gpuLayers": -1,       # -1 = automatic (all layers if the model fits in video memory)
     "backend": "auto",     # auto | vulkan | cuda | cpu
@@ -82,6 +82,11 @@ class Settings:
             self.values.update(json.loads(self.path.read_text(encoding="utf-8")))
         except Exception:
             pass
+        if not self.values.get("ctxV2"):
+            # Older versions defaulted to 8192 without a compressed cache: move them to 16384.
+            if self.values.get("nCtx") == 8192:
+                self.values["nCtx"] = 16384
+            self.set("ctxV2", True)
 
     def get(self, key):
         return self.values.get(key, DEFAULTS.get(key))

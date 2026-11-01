@@ -2,6 +2,7 @@
 import atexit
 import collections
 import json
+import re
 import os
 import socket
 import subprocess
@@ -34,6 +35,21 @@ def available_backends() -> dict[str, str]:
         if p.is_file():
             out[name] = str(p)
     return out
+
+
+_help_cache: dict[str, str] = {}
+
+
+def _help_text(exe: str) -> str:
+    """llama-server --help, so we only pass flags this engine build understands."""
+    if exe not in _help_cache:
+        try:
+            r = subprocess.run([exe, "--help"], capture_output=True, text=True, timeout=20,
+                               cwd=str(Path(exe).parent), creationflags=NO_WINDOW)
+            _help_cache[exe] = (r.stdout or "") + (r.stderr or "")
+        except Exception:
+            _help_cache[exe] = ""
+    return _help_cache[exe]
 
 
 def _free_port() -> int:
@@ -112,6 +128,12 @@ class Engine:
             args += ["-t", str(threads)]
         if ngl is not None and ngl >= 0:
             args += ["-ngl", str(ngl)]
+        # Flash attention + 8-bit context cache: half the memory for long chats at almost the same speed.
+        help_text = _help_text(exe)
+        if "--flash-attn" in help_text and "--cache-type-k" in help_text:
+            fa_value = re.search(r"--flash-attn\s+(\[?on\|off|FA)", help_text)
+            args += ["--flash-attn", "on"] if fa_value else ["--flash-attn"]
+            args += ["--cache-type-k", "q8_0", "--cache-type-v", "q8_0"]
         self.log.clear()
         self.log.append("$ " + " ".join(f'"{a}"' if " " in a else a for a in args))
         self.proc = subprocess.Popen(
