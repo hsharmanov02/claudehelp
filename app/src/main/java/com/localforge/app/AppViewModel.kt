@@ -321,7 +321,11 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             }
             viewModelScope.launch {
                 messages += UiMessage(Role.NOTE, "Loading ${last.name.removeSuffix(".gguf")}…")
-                if (loadModelNow(last)) send() else messages += UiMessage(Role.NOTE, engineMessage ?: "Couldn't load the model.")
+                if (loadModelNow(last)) {
+                    send()
+                } else {
+                    messages.add(UiMessage(Role.NOTE, engineMessage ?: "Couldn't load the model."))
+                }
             }
             return
         }

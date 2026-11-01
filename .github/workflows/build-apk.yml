@@ -34,7 +34,28 @@ jobs:
           gradle-version: "8.14.3"
 
       - name: Build APK
-        run: gradle :app:assembleRelease --no-daemon --stacktrace
+        shell: bash
+        run: |
+          set -o pipefail
+          gradle :app:assembleRelease --no-daemon --stacktrace 2>&1 | tee build.log
+
+      - name: Publish build log when the build fails
+        if: failure()
+        shell: bash
+        run: |
+          grep -nE "^e: |error:|FAILURE|What went wrong" -A3 build.log | head -150 > build-errors.txt || true
+          tail -80 build.log >> build-errors.txt || true
+
+      - name: Upload failure log as a release file
+        if: failure()
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: build-log
+          name: Last failed build log
+          body: Errors from the last failed build (${{ github.sha }}).
+          files: build-errors.txt
+          prerelease: true
+          make_latest: false
 
       - name: Rename APK
         run: cp app/build/outputs/apk/release/app-release.apk LocalForge.apk
