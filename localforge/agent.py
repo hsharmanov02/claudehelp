@@ -251,6 +251,8 @@ class App:
             display = f"📎 {Path(attachment).name}\n{text}"
         user = self._msg("user", display, model_text)
         self.steps_left = 12
+        self.total_steps = 0
+        self.last_reply = None
         self.ran_code = False
         self.failed_code = set()
         self.done_lookups = {}   # tool calls already made for this request -> result
@@ -315,7 +317,7 @@ class App:
                         parts.append(tools.execute(tools.Action("list", d.path), self.index))
         except OSError:
             pass
-        hits = [h for h in self.index.search(text, 25) if h[0] not in used]
+        hits = [] if parts else [h for h in self.index.search(text, 25) if h[0] not in used]
         if hits:
             parts.append("Best matches on the PC:\n" + self.index.format(hits))
         if not parts:
@@ -369,6 +371,12 @@ class App:
         if not merged:
             last = self._last_user_text()[:budget]
             merged = [{"role": "user", "content": last or "Hello"}]
+        elif merged[-1]["role"] == "user" and picked and re.match(r"\[(Tool results|Code output)\]", picked[-1]["content"]):
+            # After tool output small models forget what was asked. Repeat the question.
+            q = (self.messages_question() or "")[:600]
+            if q:
+                merged[-1] = {"role": "user", "content": merged[-1]["content"] +
+                              f"\n\n[The user's question: {q}]\nIf the results above answer it, answer it now, fully and directly."}
         return [{"role": "system", "content": sys_prompt}] + merged
 
     def _chat(self, on_piece, reply):
@@ -382,6 +390,12 @@ class App:
                 if "context" not in str(e).lower() or shrink == 0.15:
                     raise
                 reply["text"] = ""
+        return ""
+
+    def messages_question(self):
+        for m in reversed(self.messages):
+            if m["role"] == "user":
+                return m["text"]
         return ""
 
     def _last_user_text(self):
@@ -411,6 +425,16 @@ class App:
             if self.stop_requested:
                 self._msg("note", "Stopped.")
                 break
+            self.total_steps = getattr(self, "total_steps", 0) + 1
+            same = re.sub(r"\s+", " ", reply["text"]).strip() == getattr(self, "last_reply", None)
+            self.last_reply = re.sub(r"\s+", " ", reply["text"]).strip()
+            if same:
+                self.repeats += 1
+                self._msg("tool", "You sent exactly the same reply as before. Don't repeat it. "
+                                  "Answer the user now with what you have.")
+                if self.repeats >= 3:
+                    break
+                continue
             actions = tools.parse(full)
             if not any(a.kind == "run" for a in actions) and not self.ran_code and not self.repeats:
                 # Only before any code ran: later, code blocks in a final answer are examples, not requests.
@@ -433,7 +457,8 @@ class App:
             did_run = False
             waiting = False   # a card waits for the user: everything after it depends on it, so stop there
             for a in actions:
-                if waiting:
+                if waiting and not (a.is_browser and not a.browser_read and reply["actions"] and
+                                    reply["actions"][-1]["action"]["kind"] in ("batch",) + tools.BROWSER_KINDS):
                     break
                 key = (a.kind, a.path, a.content)
                 site = self._site_for(a)
@@ -463,6 +488,12 @@ class App:
                     results.append(r)
                     if a.kind != "scroll":
                         self.done_lookups[key] = True
+                    continue
+                if a.is_browser and not browser_auto and reply["actions"] and \
+                        reply["actions"][-1]["status"] == "pending" and reply["actions"][-1]["action"]["kind"] in ("batch",) + tools.BROWSER_KINDS:
+                    # Several clicks/typing in one reply: one card for all of them, run in order.
+                    self._add_to_batch(reply["actions"][-1], a)
+                    self.touch()
                     continue
                 pa = {"id": len(reply["actions"]), "action": a.to_dict(), "status": "pending", "result": None}
                 reply["actions"].append(pa)
@@ -538,6 +569,11 @@ class App:
         name = re.sub(r"[^A-Za-z0-9_-]+", "-", (m.group(1) if m else "page").strip())[:40].strip("-") or "page"
         f = d / f"{name}-{int(time.time())}.html"
         f.write_text(a.content, encoding="utf-8")
+        try:   # a fresh page starts with fresh saved data (localStorage from earlier test pages confuses tests)
+            self.browser.send("Storage.clearDataForOrigin", {"origin": "file://",
+                                                             "storageTypes": "local_storage,session_storage,indexeddb"})
+        except Exception:
+            pass
         report = self.browser.open_page(str(f))
         ok = "[error]" not in report and "Uncaught" not in report
         return runner.RunResult("html (browser)", ok, False,
@@ -554,7 +590,7 @@ class App:
         if not pa or pa["status"] != "pending":
             return
         d = pa["action"]
-        a = tools.Action(d["kind"], d["path"], d["content"], d.get("extra", ""))
+        a = tools.Action("page" if d["kind"] == "batch" else d["kind"], d["path"], d["content"], d.get("extra", ""))
         if self.generating:
             pa["result"] = "Wait for the current reply to finish."
             self.touch()
@@ -566,7 +602,17 @@ class App:
 
         def job():
             try:
-                if a.is_browser:
+                if d["kind"] == "batch":
+                    outs = []
+                    for st in d["steps"]:
+                        sa = tools.Action(st["kind"], st["path"], st["content"], st.get("extra", ""))
+                        r = tools.execute_browser(sa, self.browser)
+                        outs.append(f"{sa.label}: " + (r if st is d["steps"][-1] or r.startswith("Browser error") else r.split("\n", 1)[0]))
+                        if r.startswith("Browser error"):
+                            break
+                    pa["result"] = f"Did {len(outs)} of {len(d['steps'])} steps"
+                    self._msg("tool", "\n\n".join(outs))
+                elif a.is_browser:
                     r = tools.execute_browser(a, self.browser)
                     self._note_block(a, r)
                     pa["result"] = self._short(r)
@@ -580,7 +626,7 @@ class App:
                 # Carry on once every card in that reply has been answered.
                 waiting = msg and any(x["status"] == "pending" for x in msg["actions"])
                 if self.engine.loaded and not waiting:
-                    if self.steps_left <= 0:
+                    if self.steps_left <= 0 and getattr(self, "total_steps", 0) < 24:
                         self.steps_left = 3
                     self._agent_loop()
             except Exception as e:
@@ -599,11 +645,21 @@ class App:
 
     @staticmethod
     def _code_key(a: tools.Action):
-        return (a.path, re.sub(r"\s+", " ", a.content).strip())
+        code = re.sub(r"/\*[\s\S]*?\*/", "", a.content)
+        code = re.sub(r"(?m)(--|#|//)[^\n'\"]*$", "", code)
+        return (a.path, re.sub(r"\s+", " ", code).strip())
 
     def _files_changed(self):
         """After a write/mkdir/delete, folder listings and file reads may differ, so allow them again."""
         self.done_lookups = {k: v for k, v in self.done_lookups.items() if k[0] not in ("list", "read", "find")}
+
+    @staticmethod
+    def _add_to_batch(pa, a: tools.Action):
+        d = pa["action"]
+        if d["kind"] != "batch":
+            pa["action"] = d = {"kind": "batch", "path": "", "content": "", "extra": "", "steps": [d], "label": ""}
+        d["steps"].append(a.to_dict())
+        d["label"] = f"Do {len(d['steps'])} browser steps: " + "; ".join(st["label"] for st in d["steps"])[:300]
 
     def _note_block(self, a: tools.Action, result: str):
         if "This site blocked the browser" in result:

@@ -242,7 +242,7 @@ def _sql(code: str, wd: Path) -> RunResult:
 
 
 def _table(cols, rows) -> str:
-    cells = [["NULL" if v is None else (f"{v:.4g}" if isinstance(v, float) and abs(v) < 1e15 and v != int(v) else str(v))
+    cells = [["NULL" if v is None else (f"{v:.6f}".rstrip("0").rstrip(".") if isinstance(v, float) and abs(v) < 1e15 else str(v))
               for v in r] for r in rows]
     widths = [min(40, max([len(str(c))] + [len(r[i]) for r in cells])) for i, c in enumerate(cols)]
     line = lambda vals: " | ".join(str(v)[:40].ljust(w) for v, w in zip(vals, widths)).rstrip()
