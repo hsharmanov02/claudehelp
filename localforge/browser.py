@@ -238,6 +238,13 @@ class Browser:
         except Exception:
             pass
         self.send("Page.addScriptToEvaluateOnNewDocument", {"source": INIT_SCRIPT})
+        # Look like the normal browser: many sites (search engines especially) block "Headless" user agents.
+        try:
+            ua = self.send("Browser.getVersion").get("userAgent", "")
+            ua = ua.replace("HeadlessChrome", "Chrome").replace("HeadlessEdg", "Edg")
+            self.send("Network.setUserAgentOverride", {"userAgent": ua, "acceptLanguage": "en-US,en;q=0.9"})
+        except Exception:
+            pass
         self.send("Emulation.setDeviceMetricsOverride", {"width": self.width, "height": self.height,
                                                          "deviceScaleFactor": 1, "mobile": False})
         try:
@@ -578,10 +585,15 @@ class Browser:
                 let href = a ? a.href : ''; try { const u = new URL(href); if (u.searchParams.get('uddg')) href = u.searchParams.get('uddg'); } catch (e) {}
                 return { title: a ? a.innerText.trim() : '', url: href, snippet: s ? s.innerText.trim() : '' }; }))"""),
         ]
+        generic = r"""JSON.stringify([...document.querySelectorAll('h2 a[href^="http"], h3 a[href^="http"], a[href^="http"] h3')]
+            .map(x => x.closest('a')).filter((a, i, all) => a && all.indexOf(a) === i && !a.href.includes(location.hostname))
+            .slice(0, 10).map(a => ({ title: a.innerText.trim(), url: a.href, snippet: '' })))"""
         for name, url, js in engines:
             try:
                 self.navigate(url)
                 items = [r for r in json.loads(self.eval(js) or "[]") if r.get("title") and r.get("url")]
+                if not items:
+                    items = [r for r in json.loads(self.eval(generic) or "[]") if r.get("title")]
             except Exception:
                 items = []
             if items:
