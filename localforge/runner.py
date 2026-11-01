@@ -193,42 +193,59 @@ def run_python_inline(script: str, out_file: str) -> int:
 
 def _sql(code: str, wd: Path) -> RunResult:
     db = wd / "localforge.db"
-    out = []
+    out, n = [], 0
+    con = None
     try:
         con = sqlite3.connect(str(db))
         cur = con.cursor()
-        stmts = [s for s in _split_sql(code) if s.strip()]
-        for s in stmts:
-            cur.execute(s)
+        stmts = _split_sql(code)
+        for n, st in enumerate(stmts, 1):
+            cur.execute(st)
             if cur.description:
                 cols = [c[0] for c in cur.description]
-                rows = cur.fetchmany(200)
-                out.append(" | ".join(cols))
-                out.append("-" * min(80, len(out[-1])))
-                out += [" | ".join("NULL" if v is None else str(v) for v in r) for r in rows]
+                rows = cur.fetchmany(201)
+                out.append(_table(cols, rows[:200]))
+                if len(rows) > 200:
+                    out.append("…(only the first 200 rows are shown)")
                 out.append("")
         con.commit()
-        con.close()
-        return RunResult("sql", True, False, _trim("\n".join(out).strip()) or f"OK ({len(stmts)} statement(s)) — database {db}")
+        return RunResult("sql", True, False, _trim("\n".join(out).strip()) or f"OK ({len(stmts)} statement(s)) - database {db}")
     except Exception as e:
-        return RunResult("sql", False, False, "\n".join(out + [f"SQL error: {e}"]))
+        hint = ""
+        if "already exists" in str(e):
+            hint = "\nThe database keeps its tables between runs. Start with DROP TABLE IF EXISTS ... to recreate them."
+        elif "no such table" in str(e):
+            hint = "\nThe database is " + str(db) + ". Create the table first in the same run."
+        return RunResult("sql", False, False, "\n".join(out + [f"SQL error in statement {n}: {e}{hint}"]))
+    finally:
+        if con is not None:
+            con.close()
 
 
-def _split_sql(code: str):
-    parts, cur, quote = [], [], None
-    for ch in code:
-        if quote:
-            if ch == quote:
-                quote = None
-        elif ch in ("'", '"'):
-            quote = ch
-        elif ch == ";":
-            parts.append("".join(cur))
-            cur = []
-            continue
-        cur.append(ch)
-    parts.append("".join(cur))
-    return parts
+def _table(cols, rows) -> str:
+    cells = [["NULL" if v is None else (f"{v:.4g}" if isinstance(v, float) and abs(v) < 1e15 and v != int(v) else str(v))
+              for v in r] for r in rows]
+    widths = [min(40, max([len(str(c))] + [len(r[i]) for r in cells])) for i, c in enumerate(cols)]
+    line = lambda vals: " | ".join(str(v)[:40].ljust(w) for v, w in zip(vals, widths)).rstrip()
+    return "\n".join([line(cols), "-+-".join("-" * w for w in widths)] + [line(r) for r in cells] +
+                     [f"({len(rows)} row{'s' if len(rows) != 1 else ''})"])
+
+
+def _split_sql(code: str) -> list[str]:
+    """Splits a script into statements. Handles quotes, -- and /* */ comments, and triggers (BEGIN ... END;)."""
+    parts, start = [], 0
+    for i, ch in enumerate(code):
+        if ch == ";" and sqlite3.complete_statement(code[start:i + 1]):
+            parts.append(code[start:i + 1])
+            start = i + 1
+    parts.append(code[start:])
+    return [p.strip() for p in parts if _has_sql(p)]
+
+
+def _has_sql(s: str) -> bool:
+    import re as _re
+    s = _re.sub(r"--[^\n]*|/\*[\s\S]*?\*/", "", s)
+    return bool(s.strip().strip(";").strip())
 
 
 SPECS = {

@@ -254,8 +254,18 @@ function md(src) {
       .replace(/(^|[^*])\*([^*\n]+)\*/g, "$1<i>$2</i>")
       .replace(/\[([^\]]+)\]\((https?:[^)\s]+)\)/g, '<a href="$2" target="_blank">$1</a>');
     const lines = h.split("\n");
-    let html = "", list = null;
+    let html = "", list = null, table = [];
+    const flushTable = () => {
+      if (!table.length) return;
+      const rows = table.map(r => r.trim().replace(/^\|/, "").replace(/\|$/, "").split("|").map(c => c.trim()));
+      const sep = rows.length > 1 && rows[1].every(c => /^:?-{2,}:?$/.test(c));
+      const head = sep ? rows[0] : null, body = sep ? rows.slice(2) : rows;
+      html += `<div class="tablewrap"><table>${head ? `<thead><tr>${head.map(c => `<th>${c}</th>`).join("")}</tr></thead>` : ""}<tbody>${body.map(r => `<tr>${r.map(c => `<td>${c}</td>`).join("")}</tr>`).join("")}</tbody></table></div>`;
+      table = [];
+    };
     for (const line of lines) {
+      if (/^\s*\|.*\|\s*$/.test(line)) { if (list) { html += `</${list}>`; list = null; } table.push(line); continue; }
+      flushTable();
       const li = line.match(/^\s*([-*•]|\d+[.)])\s+(.*)$/);
       if (li) {
         const type = /\d/.test(li[1]) ? "ol" : "ul";
@@ -268,6 +278,7 @@ function md(src) {
       if (hd) html += `<h${hd[1].length > 2 ? 4 : 3}>${hd[2]}</h${hd[1].length > 2 ? 4 : 3}>`;
       else if (line.trim()) html += `<p>${line}</p>`;
     }
+    flushTable();
     if (list) html += `</${list}>`;
     out.push(html);
   }

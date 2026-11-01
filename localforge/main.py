@@ -39,7 +39,8 @@ def main(argv=None):
 
     httpd = server.serve(app, args.port, pick_file)
     url = f"http://127.0.0.1:{httpd.server_address[1]}/"
-    app.browser.sandbox_url = url + "sandbox"
+    # Its own port = a different origin from the app, so code run there can't read the app's page or token.
+    app.browser.sandbox_url = f"http://127.0.0.1:{server.serve_sandbox()}/sandbox"
     print(f"LocalForge is running at {url}", flush=True)
 
     if args.no_open:

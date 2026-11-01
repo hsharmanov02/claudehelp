@@ -138,3 +138,8 @@ details summary { cursor: pointer; color: var(--muted); }
 #br-loading { position: absolute; top: 0; left: 0; height: 3px; width: 100%; background: linear-gradient(90deg, transparent, var(--accent), transparent); background-size: 50% 100%; animation: brload 1s linear infinite; }
 @keyframes brload { from { background-position: -50% 0; } to { background-position: 150% 0; } }
 #tab-browser .banner { margin: 10px 16px; }
+
+.tablewrap { overflow-x: auto; margin: 8px 0; }
+.tablewrap table { border-collapse: collapse; font-size: 13px; }
+.tablewrap th, .tablewrap td { border: 1px solid var(--line, #2a2f3a); padding: 4px 10px; text-align: left; vertical-align: top; }
+.tablewrap th { background: rgba(255,255,255,0.05); font-weight: 600; }

@@ -72,7 +72,15 @@ FENCE = re.compile(r"```([\w+#.-]*)[ \t]*\r?\n([\s\S]*?)```")
 
 
 def strip_thinking(text: str) -> str:
-    return THINK.sub("", text).replace("</think>", "").replace("⁣", "").strip()
+    text = THINK.sub("", text).replace("</think>", "")
+    return re.sub("[\u2063\u200b\u200c\u200d\u2060\ufeff]", "", text).strip()
+
+TAG_ANY = re.compile(r"<(write|run|type|js)\b[\s\S]*?(</\1>|$)|<[a-z]+\b[^>]*/?>", re.I)
+
+
+def prose_of(reply: str) -> str:
+    """The reply with all tool tags removed: what the user actually reads."""
+    return TAG_ANY.sub("", strip_thinking(reply)).strip()
 
 
 def system_prompt(home: str, work: str, languages: list[str], overview: str, os_name: str) -> str:
@@ -92,7 +100,7 @@ print(sum(range(10)))
 </run>
 The output (or the error) is sent back to you. Read it, fix any errors and run again until it works, then tell the user the result.
 Never tell the user to open a terminal or run code themselves. You run it.
-Code runs in the folder {work}. No input(), no GUI windows. For sql, a SQLite database is used.
+Code runs in the folder {work}. No input(), no GUI windows. For sql, SQLite is used and the database file keeps its tables between runs, so start scripts with DROP TABLE IF EXISTS when you create tables.
 javascript runs INSIDE YOUR BROWSER (full DOM, console.log output and errors come back to you; await works at top level).
 html opens IN YOUR BROWSER: you get the page text, its buttons/inputs as numbered elements, and every console error.
 Then TEST IT: use <click n="..."/>, <type n="...">...</type> and <js>return ...</js> on the page, read the result, fix bugs and run again until it really works.

@@ -65,9 +65,23 @@ def run() -> int:
     check("powershell/shell runner", lambda: runner.run("powershell" if os.name == "nt" else "shell", "echo hi").output)
     check("sql runner", lambda: runner.run("sql", "select 1+1 as two;").output)
 
+    def sql_test():
+        r = runner.run("sql", """DROP TABLE IF EXISTS c; DROP TABLE IF EXISTS o;
+            CREATE TABLE c(id INTEGER PRIMARY KEY, name TEXT); CREATE TABLE o(id INTEGER PRIMARY KEY, cid INT, total REAL);
+            INSERT INTO c VALUES (1,'Ann'),(2,'Bo'),(3,'Cy'); INSERT INTO o(cid,total) VALUES (1,10),(1,5.5),(2,30);
+            -- a comment; with a semicolon
+            SELECT c.name, COUNT(o.id) AS orders, COALESCE(SUM(o.total),0) AS spend,
+                   RANK() OVER (ORDER BY COALESCE(SUM(o.total),0) DESC) AS rnk
+            FROM c LEFT JOIN o ON o.cid = c.id GROUP BY c.id ORDER BY rnk;""")
+        assert r.ok and "Bo" in r.output and "(3 rows)" in r.output, r.output
+        return r.output.replace("\n", " / ")
+    check("sql joins + window functions", sql_test)
+
     def browser_test():
         from .browser import Browser
+        from . import server
         b = Browser()
+        b.sandbox_url = f"http://127.0.0.1:{server.serve_sandbox()}/sandbox"
         try:
             b.navigate("data:text/html,<title>LF</title><input id=a placeholder=name><button onclick=\"document.title='clicked '+a.value\">Go</button>")
             d = b.describe()

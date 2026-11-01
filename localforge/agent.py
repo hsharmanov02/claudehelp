@@ -410,6 +410,10 @@ class App:
                 fb = tools.fallback_run(self._last_user_text(), full)
                 if fb:
                     actions.append(fb)
+            # Small models often finish a full answer and then ask for a needless click. Drop it.
+            if len(tools.prose_of(full)) > 350 and actions and all(a.kind in ("click", "type", "press", "scroll", "page")
+                                                                  for a in actions):
+                actions = []
             if not actions:
                 if re.search(r"<run\b", full, re.I):
                     self._msg("tool", "Your <run> tag had no code in it. Put the whole program between "

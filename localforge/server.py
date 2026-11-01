@@ -52,9 +52,16 @@ def make_handler(app, pick_file=None):
             t = self.headers.get("X-LF-Token") or (q or {}).get("t", [None])[0]
             return t == TOKEN
 
+        def _host_ok(self):
+            # Blocks DNS-rebinding: a web page on another domain pointed at 127.0.0.1 must not reach the app.
+            host = (self.headers.get("Host") or "").split(":")[0].lower()
+            return host in ("127.0.0.1", "localhost")
+
         def do_GET(self):
             u = urllib.parse.urlparse(self.path)
             q = urllib.parse.parse_qs(u.query)
+            if not self._host_ok():
+                return self._send(403, b"forbidden", "text/plain")
             if u.path in ("/", "/index.html"):
                 html = (web / "index.html").read_text(encoding="utf-8").replace("__LF_TOKEN__", TOKEN)
                 return self._send(200, html.encode("utf-8"), "text/html; charset=utf-8")
@@ -95,7 +102,7 @@ def make_handler(app, pick_file=None):
 
         def do_POST(self):
             u = urllib.parse.urlparse(self.path)
-            if not self._authed():
+            if not self._host_ok() or not self._authed():
                 return self._send(403, b"forbidden", "text/plain")
             n = int(self.headers.get("Content-Length") or 0)
             try:
@@ -285,6 +292,27 @@ def file_op(b: dict) -> dict:
     except Exception as e:
         return {"message": f"Error: {e}"}
     return {"message": "Unknown operation"}
+
+
+class _SandboxHandler(BaseHTTPRequestHandler):
+    def log_message(self, *a):
+        pass
+
+    def do_GET(self):
+        body = SANDBOX.encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+
+def serve_sandbox() -> int:
+    """Serves the blank code-runner page on its own port (its own origin, away from the app's API)."""
+    httpd = ThreadingHTTPServer(("127.0.0.1", 0), _SandboxHandler)
+    httpd.daemon_threads = True
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    return httpd.server_address[1]
 
 
 def serve(app, port=0, pick_file=None):
