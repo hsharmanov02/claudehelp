@@ -41,6 +41,7 @@ class App:
         self.preview = None           # html page to show (only when the browser isn't available)
         self.browser_focus = 0        # bumps when code ran in the browser, so the UI can show it
         self.steps_left = 0
+        self.done_lookups = {}
         self.search_state = {"query": "", "results": [], "busy": False, "error": None}
         self.repo_state = {"repo": None, "files": [], "busy": False, "error": None}
         self.recs = {"items": [], "busy": False, "summary": None}
@@ -246,6 +247,7 @@ class App:
             display = f"📎 {Path(attachment).name}\n{text}"
         user = self._msg("user", display, model_text)
         self.steps_left = 8
+        self.done_lookups = {}   # tool calls already made for this request -> result
         self.generating = True
         self.touch()
 
@@ -387,8 +389,14 @@ class App:
             results = []
             blocked = False   # a browser step waits for approval; later browser steps depend on it
             for a in actions:
+                key = (a.kind, a.path, a.content)
+                if (a.read_only or a.browser_read) and key in self.done_lookups:
+                    results.append(f"You already did this ({a.label}) and got the result above. "
+                                   "Do not repeat it. Use what you have and answer the user now.")
+                    continue
                 if a.read_only:
                     results.append(tools.execute(a, self.index))
+                    self.done_lookups[key] = True
                     continue
                 if a.is_browser:
                     if blocked:
@@ -396,6 +404,8 @@ class App:
                     if a.browser_read:
                         self._set_status(a.label + "…")
                         results.append(tools.execute_browser(a, self.browser))
+                        if a.kind != "scroll":
+                            self.done_lookups[key] = True
                         continue
                     pa = {"id": len(reply["actions"]), "action": a.to_dict(), "status": "pending", "result": None}
                     reply["actions"].append(pa)

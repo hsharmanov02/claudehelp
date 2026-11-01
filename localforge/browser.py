@@ -579,7 +579,11 @@ class Browser:
         engines = [
             ("Bing", f"https://www.bing.com/search?q={q}&setlang=en", r"""JSON.stringify([...document.querySelectorAll('#b_results > li.b_algo')].slice(0, 10).map(r => {
                 const a = r.querySelector('h2 a'); const s = r.querySelector('.b_caption p, .b_lineclamp2, .b_lineclamp3, .b_algoSlug');
-                return { title: a ? a.innerText.trim() : '', url: a ? a.href : '', snippet: s ? s.innerText.trim() : '' }; }))"""),
+                let href = a ? a.href : '';
+                try { const u = new URL(href); const enc = u.searchParams.get('u');
+                  if (u.hostname.endsWith('bing.com') && enc && enc.startsWith('a1')) {
+                    const b = enc.slice(2).replace(/-/g, '+').replace(/_/g, '/'); href = atob(b + '==='.slice((b.length + 3) % 4)); } } catch (e) {}
+                return { title: a ? a.innerText.trim() : '', url: href, snippet: s ? s.innerText.trim() : '' }; }))"""),
             ("DuckDuckGo", f"https://html.duckduckgo.com/html/?q={q}", r"""JSON.stringify([...document.querySelectorAll('.result')].slice(0, 10).map(r => {
                 const a = r.querySelector('a.result__a'); const s = r.querySelector('.result__snippet');
                 let href = a ? a.href : ''; try { const u = new URL(href); if (u.searchParams.get('uddg')) href = u.searchParams.get('uddg'); } catch (e) {}

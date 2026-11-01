@@ -95,7 +95,7 @@ def run() -> int:
         b = Browser()
         try:
             r = b.search("llama.cpp github")
-            assert "1." in r and "http" in r, r[:300]
+            assert "1." in r and "http" in r and "bing.com/ck" not in r, r[:300]
             return r.splitlines()[0] + " | " + r.splitlines()[1][:80]
         finally:
             b.close()
