@@ -107,7 +107,7 @@ def run() -> int:
 
     # Real model: smallest decent uncensored GGUF we can find.
     def tiny_model():
-        for q in ("0.5B uncensored", "0.6B uncensored", "1B uncensored", "1.5B uncensored", "uncensored"):
+        for q in ("0.5B abliterated", "0.6B abliterated", "1B abliterated"):
             for r in hf.search(q, None)[:8]:
                 try:
                     files = hf.gguf_files(r["id"], None)

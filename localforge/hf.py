@@ -16,14 +16,12 @@ from .hardware import GB, PcInfo
 BASE = "https://huggingface.co"
 UA = f"LocalForge-Desktop/{__version__}"
 
-# Only true uncensored fine-tunes. Abliterated models (refusal direction removed from the weights) are left out.
-UNCENSORED_MARKERS = ("uncensored",)
-ABLITERATED_MARKERS = ("abliterat", "ablit", "heretic")
+UNCENSORED_MARKERS = ("uncensored", "abliterat", "ablit", "dolphin", "lexi", "heretic")
 
 
 def is_uncensored(name: str) -> bool:
     n = name.lower()
-    return any(m in n for m in UNCENSORED_MARKERS) and not any(m in n for m in ABLITERATED_MARKERS)
+    return any(m in n for m in UNCENSORED_MARKERS)
 
 
 QUANT_RE = re.compile(r"(IQ\d_\w+?|Q\d_K_[SML]|Q\d_K|Q\d_\d|F16|BF16|F32)(?=[.-])", re.I)
@@ -77,14 +75,14 @@ def raw_search(query: str, token: str | None, limit: int = 40) -> list[dict]:
 
 
 def search(query: str, token: str | None) -> list[dict]:
-    """Searches only uncensored GGUF repos (not abliterated ones)."""
+    """Searches only uncensored / abliterated GGUF repos."""
     base = query.strip()
     if is_uncensored(base):
         queries = [base]
     elif not base:
-        queries = ["uncensored", "uncensored gguf"]
+        queries = ["uncensored", "abliterated"]
     else:
-        queries = [f"{base} uncensored", f"{base} uncensored gguf"]
+        queries = [f"{base} uncensored", f"{base} abliterated"]
     seen, out = set(), []
     with ThreadPoolExecutor(4) as ex:
         results = list(ex.map(lambda q: _safe(lambda: raw_search(q, token), []), queries))
@@ -179,11 +177,12 @@ def est_speed(file_size: int, pc: PcInfo, active_ratio: float = 1.0) -> float:
 
 
 QUERIES = [
-    "uncensored", "uncensored gguf",
-    "1B uncensored", "3B uncensored", "4B uncensored", "7B uncensored", "8B uncensored", "9B uncensored",
-    "12B uncensored", "14B uncensored", "20B uncensored", "24B uncensored", "27B uncensored", "32B uncensored", "70B uncensored",
-    "qwen uncensored", "qwen3 uncensored", "qwen3.5 uncensored", "gemma uncensored", "llama uncensored",
-    "mistral uncensored", "nemo uncensored", "dolphin uncensored", "gpt-oss uncensored", "coder uncensored",
+    "abliterated", "uncensored",
+    "3B abliterated", "4B abliterated", "7B abliterated", "8B abliterated", "9B abliterated", "12B abliterated",
+    "14B abliterated", "24B abliterated", "27B abliterated", "32B abliterated", "70B abliterated",
+    "8B uncensored", "12B uncensored", "24B uncensored",
+    "qwen3 abliterated", "qwen3 30b a3b abliterated", "gemma 3 abliterated", "llama 3.1 8b abliterated",
+    "mistral small abliterated", "mistral nemo abliterated", "qwen2.5 coder abliterated", "dolphin", "deepseek r1 distill abliterated",
 ]
 
 

@@ -27,9 +27,7 @@ def test_strip_thinking():
 
 
 def test_uncensored_filter_and_params():
-    assert hf.is_uncensored("HauhauCS/Qwen3.8-27B-Uncensored-GGUF")
-    assert not hf.is_uncensored("huihui-ai/Qwen3-8B-abliterated")
-    assert not hf.is_uncensored("someone/Qwen3-8B-abliterated-uncensored")
+    assert hf.is_uncensored("huihui-ai/Qwen3-8B-abliterated")
     assert not hf.is_uncensored("Qwen/Qwen3-8B-GGUF")
     assert hf.params_of("Qwen3-30B-A3B-abliterated") == 30
     assert hf.active_params_of("Qwen3-30B-A3B-abliterated") == 3
