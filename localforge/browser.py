@@ -586,6 +586,51 @@ class Browser:
         for t in ("mousePressed", "mouseReleased"):
             self.send("Input.dispatchMouseEvent", {"type": t, "x": x, "y": y, "button": button, "clickCount": count})
 
+    def select_at(self, x: float, y: float):
+        """A dropdown (<select>) under the user's click. Headless Chrome draws its option list as a separate
+        popup that the screencast never shows, so LocalForge shows its own list instead."""
+        self.ensure()
+        return self.eval(f"""(() => {{
+            const el = document.elementFromPoint({float(x)}, {float(y)});
+            const inp = el && el.closest && el.closest('input');
+            const PICK = ['date', 'time', 'datetime-local', 'month', 'week', 'color'];
+            if (inp && PICK.includes((inp.type || '').toLowerCase()) && !inp.disabled && !inp.readOnly) {{
+                document.querySelectorAll('[data-lf-pick]').forEach(e => e.removeAttribute('data-lf-pick'));
+                inp.setAttribute('data-lf-pick', '1'); inp.focus();
+                const r = inp.getBoundingClientRect();
+                return {{ kind: 'input', type: inp.type.toLowerCase(), value: inp.value, min: inp.min, max: inp.max,
+                         x: r.left, y: r.top, w: r.width, h: r.height }};
+            }}
+            const s = el && el.closest && el.closest('select');
+            if (!s || s.disabled || s.multiple || s.size > 1) return null;
+            document.querySelectorAll('[data-lf-pick]').forEach(e => e.removeAttribute('data-lf-pick'));
+            s.setAttribute('data-lf-pick', '1'); s.focus();
+            const r = s.getBoundingClientRect();
+            return {{ kind: 'select', x: r.left, y: r.top, w: r.width, h: r.height, selected: s.selectedIndex,
+                     options: [...s.options].map(o => ({{ text: (o.label || o.text).trim().slice(0, 120), disabled: o.disabled,
+                                                          group: o.parentElement.tagName === 'OPTGROUP' ? o.parentElement.label : '' }})) }};
+        }})()""")
+
+    def set_picked_value(self, value: str):
+        """Sets the date/time/colour input the user clicked, the way a page script would."""
+        self.ensure()
+        ok = self.eval(f"""(() => {{ const el = document.querySelector('input[data-lf-pick]'); if (!el) return false;
+            const set = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+            el.focus(); set.call(el, {json.dumps(value)});
+            el.dispatchEvent(new Event('input', {{bubbles: true}})); el.dispatchEvent(new Event('change', {{bubbles: true}}));
+            return true; }})()""")
+        if not ok:
+            raise RuntimeError("That field isn't on the page any more.")
+
+    def choose_option(self, index: int):
+        self.ensure()
+        ok = self.eval(f"""(() => {{ const s = document.querySelector('[data-lf-pick]'); if (!s) return false;
+            s.focus(); s.selectedIndex = {int(index)};
+            s.dispatchEvent(new Event('input', {{bubbles: true}})); s.dispatchEvent(new Event('change', {{bubbles: true}}));
+            return true; }})()""")
+        if not ok:
+            raise RuntimeError("That dropdown isn't on the page any more.")
+
     def scroll(self, dy: float, x: float | None = None, y: float | None = None):
         self.ensure()
         self.send("Input.dispatchMouseEvent", {"type": "mouseWheel", "x": x if x is not None else self.width / 2,

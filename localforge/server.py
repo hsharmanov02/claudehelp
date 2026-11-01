@@ -197,7 +197,14 @@ def browser_action(app, op, b):
         elif op == "reload":
             br.reload()
         elif op == "click":
+            pick = br.select_at(float(b["x"]), float(b["y"])) if int(b.get("count", 1)) == 1 else None
+            if pick:
+                return {"ok": True, "select": pick}     # the UI shows the option list itself
             br.click_xy(float(b["x"]), float(b["y"]), count=int(b.get("count", 1)))
+        elif op == "choose":
+            br.choose_option(int(b["index"]))
+        elif op == "setvalue":
+            br.set_picked_value(str(b["value"]))
         elif op == "scroll":
             br.scroll(float(b["dy"]), b.get("x"), b.get("y"))
         elif op == "type":

@@ -532,7 +532,49 @@ function brPoint(e) {
   return { x: (e.clientX - r.left) * b.width / r.width, y: (e.clientY - r.top) * b.height / r.height };
 }
 $("#br-img").addEventListener("mousedown", e => e.preventDefault());
-$("#br-img").addEventListener("click", e => { $("#br-view").focus(); const p = brPoint(e); api("browser/click", p); });
+$("#br-img").addEventListener("click", async e => {
+  $("#br-view").focus(); closePicker();
+  const j = await api("browser/click", brPoint(e));
+  if (j.select) showPicker(j.select);
+});
+// Dropdowns and date/colour pickers are separate popups in Chrome that the page stream never shows:
+// LocalForge draws its own over the page.
+function closePicker() { const p = $("#br-pick"); if (p) p.remove(); }
+function showPicker(s) {
+  closePicker();
+  const img = $("#br-img"), view = $("#br-view"), b = S.browser;
+  const ir = img.getBoundingClientRect(), vr = view.getBoundingClientRect();
+  const kx = ir.width / b.width, ky = ir.height / b.height;
+  const box = document.createElement("div");
+  box.id = "br-pick";
+  const left = ir.left - vr.left + s.x * kx, top = ir.top - vr.top + (s.y + s.h) * ky + 2;
+  box.style.left = Math.max(4, Math.min(left, vr.width - 240)) + "px";
+  box.style.minWidth = Math.max(160, s.w * kx) + "px";
+  const below = vr.height - top - 8, above = ir.top - vr.top + s.y * ky - 8;
+  if (below < 220 && above > below) { box.style.bottom = (vr.height - (ir.top - vr.top + s.y * ky) + 2) + "px"; box.style.maxHeight = above + "px"; }
+  else { box.style.top = top + "px"; box.style.maxHeight = Math.max(120, below) + "px"; }
+  if (s.kind === "input") {
+    box.innerHTML = `<div class="pick-row"><input type="${esc(s.type)}" value="${esc(s.value)}" ${s.min ? `min="${esc(s.min)}"` : ""} ${s.max ? `max="${esc(s.max)}"` : ""}><button class="small">OK</button></div>`;
+    const inp = box.querySelector("input");
+    const done = () => { api("browser/setvalue", { value: inp.value }); closePicker(); $("#br-view").focus(); };
+    box.querySelector("button").onclick = done;
+    inp.onkeydown = ev => { if (ev.key === "Enter") done(); if (ev.key === "Escape") closePicker(); ev.stopPropagation(); };
+    view.appendChild(box);
+    inp.focus(); try { inp.showPicker && inp.showPicker(); } catch (e) {}
+    return;
+  }
+  let group = null, html = "";
+  s.options.forEach((o, i) => {
+    if (o.group && o.group !== group) { group = o.group; html += `<div class="pick-group">${esc(group)}</div>`; }
+    html += `<button class="pick-opt${i === s.selected ? " on" : ""}" data-i="${i}" ${o.disabled ? "disabled" : ""}>${esc(o.text) || "&nbsp;"}</button>`;
+  });
+  box.innerHTML = html;
+  box.onclick = ev => { const t = ev.target.closest("[data-i]"); if (!t) return; api("browser/choose", { index: +t.dataset.i }); closePicker(); $("#br-view").focus(); };
+  view.appendChild(box);
+  const on = box.querySelector(".on"); if (on) on.scrollIntoView({ block: "nearest" });
+}
+document.addEventListener("mousedown", e => { const p = $("#br-pick"); if (p && !p.contains(e.target) && e.target.id !== "br-img") closePicker(); });
+document.addEventListener("keydown", e => { if (e.key === "Escape") closePicker(); });
 $("#br-img").addEventListener("dblclick", e => { const p = brPoint(e); api("browser/click", { ...p, count: 2 }); });
 let wheelAcc = 0, wheelTimer;
 $("#br-view").addEventListener("wheel", e => {

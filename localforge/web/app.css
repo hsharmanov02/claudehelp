@@ -160,3 +160,13 @@ details summary { cursor: pointer; color: var(--muted); }
 .tablewrap table { border-collapse: collapse; font-size: 13px; }
 .tablewrap th, .tablewrap td { border: 1px solid var(--line, #2a2f3a); padding: 4px 10px; text-align: left; vertical-align: top; }
 .tablewrap th { background: rgba(255,255,255,0.05); font-weight: 600; }
+
+#br-pick { position: absolute; z-index: 20; overflow-y: auto; background: var(--panel, #16181d); border: 1px solid var(--accent, #ff7a28);
+  border-radius: 8px; box-shadow: 0 8px 28px rgba(0,0,0,.5); padding: 4px; max-width: 360px; }
+#br-pick .pick-opt { display: block; width: 100%; text-align: left; background: none; border: 0; border-radius: 5px; padding: 6px 10px;
+  color: inherit; font: inherit; cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#br-pick .pick-opt:hover { background: rgba(255,122,40,.18); }
+#br-pick .pick-opt.on { background: rgba(255,122,40,.32); font-weight: 600; }
+#br-pick .pick-opt:disabled { opacity: .45; cursor: default; }
+#br-pick .pick-group { padding: 6px 10px 2px; font-size: 12px; opacity: .65; font-weight: 600; }
+#br-pick .pick-row { display: flex; gap: 6px; padding: 4px; align-items: center; }
