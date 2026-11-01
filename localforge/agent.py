@@ -282,7 +282,8 @@ class App:
         if on_page and getattr(self.browser, "running", False) and self.browser.url and self.browser.url != "about:blank":
             # Asked from the side panel next to the browser: the question is about the page that's open.
             model_text = (f"[I'm looking at this page in your browser: \"{self.browser.title}\" {self.browser.url}. "
-                          "My request is about it: read it with <page/> or <extract/> first, then click/type on it as needed.]\n"
+                          "My request is about it. If I ask you to open/click something, read the page with <page/> and click it first; "
+                          "for data, use <extract/>. Then click/type on it as needed.]\n"
                           + (model_text or text))
         user = self._msg("user", display, model_text)
         self.steps_left = 12
@@ -578,7 +579,7 @@ class App:
                             pass
                         self._fresh_storage()
                     self._set_status(a.label + "…")
-                    r = self._exec_browser(a, self.browser)
+                    r = self._exec_browser(a)
                     self._note_block(a, r)
                     if a.kind == "browse" and DATA_WORDS.search(self._last_user_text()) and "[LocalForge note]" not in r:
                         r += "\n\n" + self._auto_extract()
@@ -600,7 +601,7 @@ class App:
                 if a.is_browser and browser_auto:
                     self._set_status(a.label + "…")
                     pa["status"] = "done"
-                    r = self._exec_browser(a, self.browser)
+                    r = self._exec_browser(a)
                     r += self._extract_if_empty(a, r)
                     self._page_changed()
                     self._note_block(a, r)
@@ -705,7 +706,7 @@ class App:
                     for st in d["steps"]:
                         sa = tools.Action(st["kind"], st["path"], st["content"], st.get("extra", ""))
                         self._set_status(sa.label + "…")
-                        r = self._exec_browser(sa, self.browser)
+                        r = self._exec_browser(sa)
                         r += self._extract_if_empty(sa, r)
                         self._note_js(sa, r)
                         if r.startswith("Browser error"):
@@ -721,7 +722,7 @@ class App:
                     self._page_changed()
                 elif a.is_browser:
                     self._set_status(a.label + "…")
-                    r = self._exec_browser(a, self.browser)
+                    r = self._exec_browser(a)
                     r += self._extract_if_empty(a, r)
                     self._note_block(a, r)
                     self._page_changed()
@@ -741,7 +742,7 @@ class App:
                     if qa.read_only:
                         outs.append(tools.execute(qa, self.index))
                     elif qa.browser_read:
-                        outs.append(self._exec_browser(qa, self.browser))
+                        outs.append(self._exec_browser(qa))
                     else:
                         outs.append(f"Not done yet: {qa.label}. Ask for it again if you still need it.")
                         break
