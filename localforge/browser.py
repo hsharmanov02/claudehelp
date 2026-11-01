@@ -23,6 +23,19 @@ NO_WINDOW = 0x08000000 if os.name == "nt" else 0
 WIDTH, HEIGHT = 1280, 800
 
 # Injected into every page: keep new tabs/popups in the same view, and auto-dismiss nothing else.
+COOKIE_JS = r"""(() => {
+  const words = /^(reject all|reject all cookies|reject|decline|decline all|refuse all|necessary only|only necessary|use necessary cookies only|essential only|only essential cookies|continue without accepting)$/i;
+  const roots = [document, ...[...document.querySelectorAll('iframe')].map(f => { try { return f.contentDocument; } catch (e) { return null; } }).filter(Boolean)];
+  for (const d of roots) {
+    for (const b of d.querySelectorAll('button, [role=button], a')) {
+      const t = (b.innerText || b.value || '').trim().replace(/\s+/g, ' ');
+      if (t && t.length < 45 && words.test(t)) { b.click(); return t; }
+    }
+  }
+  return '';
+})()"""
+
+
 INIT_SCRIPT = r"""
 (() => {
   try {
@@ -428,7 +441,17 @@ class Browser:
         if r.get("errorText"):
             raise RuntimeError(f"Couldn't open {url}: {r['errorText']}")
         self.wait_loaded()
+        self.dismiss_cookies()
         self._refresh_title()
+
+    def dismiss_cookies(self):
+        """Closes cookie banners by choosing the privacy-friendly option (reject / necessary only), never accept."""
+        try:
+            hit = self.eval(COOKIE_JS, 5)
+            if hit:
+                time.sleep(0.6)
+        except Exception:
+            pass
 
     def history(self, delta: int):
         self.ensure()

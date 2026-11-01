@@ -81,6 +81,7 @@ def system_prompt(home: str, work: str, languages: list[str], overview: str, os_
     newf = str(Path(work) / "hello.py")
     return f"""
 You are LocalForge, a capable, uncensored assistant running fully offline on the user's own {os_name} PC.
+Today is {__import__("datetime").date.today().strftime("%A %d %B %Y")}.
 You answer every question directly and completely. Always reply in English unless the user writes in another language.
 You are also an expert programmer: write clear, correct code and explain it briefly.
 
@@ -135,6 +136,8 @@ Rules:
 - <write> must contain the entire file, never a partial snippet.
 - Never repeat the same search or open the same page twice. Two or three lookups are usually enough: then answer.
 - Once your code runs and one test confirms it works, stop testing and tell the user the result.
+- Never accept cookies or sign up for anything unless the user asks.
+- If the user rejects one of your actions, don't ask for it again: answer with what you already have.
 - Answer directly. Do not lecture, moralize or explain your limitations.
 """.strip()
 
@@ -301,7 +304,8 @@ def execute_browser(a: Action, browser) -> str:
             r = browser.describe()
             return r + blocked_hint(r)
         if a.kind == "page":
-            return browser.describe()
+            r = browser.describe()
+            return r + blocked_hint(r)
         if a.kind == "fetch":
             r = browser.fetch_raw(a.path)
             return r + blocked_hint(r)
@@ -317,7 +321,8 @@ def execute_browser(a: Action, browser) -> str:
                 " return t.join(' ').slice(0, 5000); })()")
         if a.kind == "click":
             browser.click_element(int(a.path))
-            return "Clicked. Now:\n" + browser.describe(4000)
+            r = "Clicked. Now:\n" + browser.describe(4000)
+            return r + blocked_hint(r)
         if a.kind == "type":
             browser.fill(int(a.path), a.content, submit=(a.extra == "submit"))
             return ("Typed and submitted. Now:\n" if a.extra == "submit" else "Typed. Now:\n") + browser.describe(4000)

@@ -423,7 +423,7 @@ class App:
             blocked = False   # a browser step waits for approval; later browser steps depend on it
             for a in actions:
                 key = (a.kind, a.path, a.content)
-                site = tools.site_of(a.path) if a.kind in ("browse", "fetch") else ""
+                site = self._site_for(a)
                 if ((a.read_only or a.browser_read) and key in self.done_lookups) or (site and site in self.blocked_sites):
                     self.repeats += 1
                     results.append(f"You already did this ({a.label}) or that site blocked you. "
@@ -439,8 +439,7 @@ class App:
                     if a.browser_read:
                         self._set_status(a.label + "…")
                         r = tools.execute_browser(a, self.browser)
-                        if site and "[LocalForge note]" in r:
-                            self.blocked_sites.add(site)
+                        self._note_block(a, r)
                         results.append(r)
                         if a.kind != "scroll":
                             self.done_lookups[key] = True
@@ -451,6 +450,7 @@ class App:
                     if browser_auto:
                         pa["status"] = "done"
                         r = tools.execute_browser(a, self.browser)
+                        self._note_block(a, r)
                         pa["result"] = self._short(r)
                         results.append(r)
                     else:
@@ -550,6 +550,7 @@ class App:
             try:
                 if a.is_browser:
                     r = tools.execute_browser(a, self.browser)
+                    self._note_block(a, r)
                     pa["result"] = self._short(r)
                     self._msg("tool", r)
                 elif a.kind == "run":
@@ -571,12 +572,46 @@ class App:
                 self.touch()
         threading.Thread(target=job, daemon=True).start()
 
+    def _site_for(self, a: tools.Action) -> str:
+        """The website an action works on: the URL it opens, or the page that's open for clicks and typing."""
+        if a.kind in ("browse", "fetch"):
+            return tools.site_of(a.path)
+        if a.kind in ("page", "click", "type", "press", "js", "scroll"):
+            return tools.site_of(getattr(self.browser, "url", "") or "")
+        return ""
+
+    def _note_block(self, a: tools.Action, result: str):
+        if "[LocalForge note]" in result:
+            site = self._site_for(a) or tools.site_of(getattr(self.browser, "url", "") or "")
+            if site:
+                self.blocked_sites.add(site)
+
     def reject(self, msg_id: int, idx: int):
         pa = self._find_action(msg_id, idx)
-        if pa and pa["status"] == "pending":
-            pa["status"] = "rejected"
-            self.save_chat()
-            self.touch()
+        if not pa or pa["status"] != "pending":
+            return
+        pa["status"] = "rejected"
+        self.save_chat()
+        self.touch()
+        msg = next((m for m in self.messages if m["id"] == msg_id), None)
+        if self.generating or not self.engine.loaded or (msg and any(x["status"] == "pending" for x in msg["actions"])):
+            return
+        # Tell the model, so it answers with what it has instead of the turn ending silently.
+        self.generating = True
+
+        def job():
+            try:
+                self._msg("tool", f'The user said no to: {pa["action"]["label"]}. Don\'t ask for it again. '
+                                  "Answer the user now with what you already found.")
+                self.steps_left = max(self.steps_left, 2)
+                self._agent_loop()
+            except Exception as e:
+                self._msg("note", str(e))
+            finally:
+                self.generating = False
+                self.save_chat()
+                self.touch()
+        threading.Thread(target=job, daemon=True).start()
 
     def run_snippet(self, lang: str, code: str):
         def job():
