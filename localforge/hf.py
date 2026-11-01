@@ -1,5 +1,6 @@
 """Hugging Face Hub: uncensored GGUF search, file lists, PC-aware picks and resumable downloads."""
 import json
+import os
 import re
 import threading
 import urllib.error
@@ -256,10 +257,74 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
 _opener = urllib.request.build_opener(_NoRedirect)
 
 
-def download_part(repo: str, path: str, target: Path, token: str | None, cancel: threading.Event, on_bytes):
-    """Downloads one file to target (resuming target.part). on_bytes(n) is called as data arrives."""
+_part_locks: dict[str, threading.Lock] = {}
+_part_guard = threading.Lock()
+
+
+def _replace_with_retry(src: Path, dst: Path, tries=20):
+    """Windows antivirus or indexing can hold a just-finished file for a moment; wait and retry the rename."""
+    import time
+    for i in range(tries):
+        try:
+            if dst.exists():
+                dst.unlink()
+            src.replace(dst)
+            return
+        except PermissionError:
+            if i == tries - 1:
+                raise
+            time.sleep(0.5)
+
+
+def download_part(repo: str, path: str, target: Path, token: str | None, cancel: threading.Event, on_bytes,
+                  expected_size: int = 0):
+    """Downloads one file to target (resuming target.part). on_bytes(n) is called as data arrives.
+
+    Only one writer per file: a lock inside this process plus a lock file that stops a second LocalForge
+    (or a second self-test) from writing the same .part at the same time.
+    """
+    import os
+    import time
+    key = str(target.resolve()).lower()
+    with _part_guard:
+        lock = _part_locks.setdefault(key, threading.Lock())
+    if not lock.acquire(blocking=False):
+        raise RuntimeError("This file is already being downloaded.")
+    lock_file = target.with_name(target.name + ".lock")
+    fd = None
+    try:
+        for _ in range(2):
+            try:
+                fd = os.open(str(lock_file), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+                os.write(fd, str(os.getpid()).encode())
+                break
+            except FileExistsError:
+                # Stale lock from a crash? Locks older than 2 minutes with no growing .part are stale.
+                part = target.with_name(target.name + ".part")
+                newest = max(lock_file.stat().st_mtime, part.stat().st_mtime if part.exists() else 0)
+                if time.time() - newest > 120:
+                    lock_file.unlink(missing_ok=True)
+                    continue
+                raise RuntimeError("Another LocalForge window is already downloading this file.") from None
+        if fd is None:
+            raise RuntimeError("Couldn't lock the download file.")
+        _download_locked(repo, path, target, token, cancel, on_bytes, expected_size)
+    finally:
+        if fd is not None:
+            os.close(fd)
+            lock_file.unlink(missing_ok=True)
+        lock.release()
+
+
+def _download_locked(repo, path, target: Path, token, cancel, on_bytes, expected_size):
     part = target.with_name(target.name + ".part")
     start = part.stat().st_size if part.exists() else 0
+    if expected_size and start > expected_size:
+        part.unlink()          # corrupt leftover: start over
+        start = 0
+    if expected_size and start == expected_size:
+        _replace_with_retry(part, target)
+        return
     url = download_url(repo, path)
     resp = None
     for _ in range(10):
@@ -272,7 +337,7 @@ def download_part(repo: str, path: str, target: Path, token: str | None, cancel:
                 url = urllib.parse.urljoin(url, e.headers.get("Location"))
                 continue
             if e.code == 416:   # already complete
-                part.replace(target)
+                _replace_with_retry(part, target)
                 return
             if e.code in (401, 403):
                 raise RuntimeError("This model is gated. Add a Hugging Face token in Settings.") from None
@@ -280,23 +345,41 @@ def download_part(repo: str, path: str, target: Path, token: str | None, cancel:
     if resp is None:
         raise RuntimeError("Too many redirects")
     resumed = resp.status == 206
-    if not resumed:
+    if resumed:
+        # Make sure the server resumed exactly where our file ends.
+        cr = resp.headers.get("Content-Range", "")
+        m = re.match(r"bytes (\d+)-", cr)
+        if m and int(m.group(1)) != start:
+            resp.close()
+            part.unlink(missing_ok=True)
+            raise RuntimeError("The server resumed at the wrong place. Click download again to restart cleanly.")
+    else:
         start = 0
     on_bytes(start, reset=True)
     expected = start + int(resp.headers.get("Content-Length") or 0)
+    if expected_size and expected <= start:
+        expected = expected_size
     done = start
-    with resp, open(part, "ab" if resumed else "wb") as out:
-        while True:
-            if cancel.is_set():
-                raise InterruptedError("Cancelled")
-            chunk = resp.read(1024 * 1024)
-            if not chunk:
-                break
-            out.write(chunk)
-            done += len(chunk)
-            on_bytes(len(chunk))
-    if expected > start and done < expected:
+    with resp:
+        with open(part, "r+b" if resumed else "wb") as out:
+            out.seek(start)
+            out.truncate()
+            while True:
+                if cancel.is_set():
+                    raise InterruptedError("Cancelled")
+                chunk = resp.read(1024 * 1024)
+                if not chunk:
+                    break
+                out.write(chunk)
+                done += len(chunk)
+                on_bytes(len(chunk))
+            out.flush()
+            os.fsync(out.fileno())
+    actual = part.stat().st_size
+    if expected > start and actual < expected:
         raise RuntimeError("Download was cut off. Click download again to resume.")
-    if target.exists():
-        target.unlink()
-    part.replace(target)
+    want = expected_size or expected
+    if want and actual != want:
+        part.unlink(missing_ok=True)
+        raise RuntimeError(f"Downloaded file has the wrong size ({actual} bytes, expected {want}). Click download again.")
+    _replace_with_retry(part, target)

@@ -176,7 +176,7 @@ class ModelStore:
                     finished += size
                     continue
                 current[0] = 0
-                hf.download_part(d["repo"], path, target, token, d["cancel"], on_bytes)
+                hf.download_part(d["repo"], path, target, token, d["cancel"], on_bytes, size)
                 finished += target.stat().st_size
             d["done"] = d["total"] = finished
             d["state"] = "done"

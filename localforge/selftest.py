@@ -108,7 +108,9 @@ def run() -> int:
 
         def dl():
             ev = threading.Event()
-            hf.download_part(f.repo, f.path, target, None, ev, lambda n, reset=False: None)
+            if not (target.exists() and target.stat().st_size == f.size):
+                hf.download_part(f.repo, f.path, target, None, ev, lambda n, reset=False: None, f.size)
+            assert target.stat().st_size == f.size, f"size {target.stat().st_size} != {f.size}"
             return f"{f.repo}/{f.file_name} {target.stat().st_size} bytes"
         check("download model", dl)
         if target.exists():
