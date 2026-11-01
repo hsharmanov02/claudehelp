@@ -153,7 +153,8 @@ QUANT_RANK = {
     "Q4_K_S": 0.97, "IQ4_XS": 0.96, "Q4_0": 0.95, "IQ4_NL": 0.95,
 }
 TRUSTED = ("bartowski", "mradermacher", "unsloth", "lmstudio-community", "quantfactory", "huihui-ai", "mlabonne")
-EXCLUDED = ("vision", "-vl", "mmproj", "embed", "reward", "draft", "audio", "tts", "rerank", "-it-qat-q4")
+EXCLUDED = ("vision", "-vl", "mmproj", "embed", "reward", "draft", "audio", "tts", "rerank", "-it-qat-q4",
+            "image", "diffusion", "flux", "-wan", "video", "speech", "whisper", "ocr")
 
 
 def est_speed(file_size: int, pc: PcInfo, active_ratio: float = 1.0) -> float:
@@ -206,6 +207,8 @@ def recommend(pc: PcInfo, token: str | None, limit: int = 8) -> list[dict]:
         ratio = (active / params) if active and params else 1.0
         best, best_rank = None, 0
         for f in files:
+            if any(e in f.file_name.lower() for e in EXCLUDED):
+                continue
             rank = QUANT_RANK.get(f.quant)
             if rank and 0 < f.size <= budget and rank > best_rank:
                 best, best_rank = f, rank
