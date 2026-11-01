@@ -148,6 +148,7 @@ Rules:
   SQLite syntax only: strftime('%Y-%m', col) for months, no FORMAT(), no [brackets], no TOP (use LIMIT).
   Window functions can't go in WHERE: compute them in a CTE, then filter in the outer query.
   "Per customer per month" means SUM by customer and month first, then rank those sums.
+  Test scripts must start with DROP TABLE IF EXISTS for every table they create, so reruns don't double the data.
 - Your answer must match the run/browser output exactly. Copy numbers and rows from it; never invent results.
   If the output doesn't show what was asked, say so and fix it instead of claiming success.
 - Do any sum, average or percentage in code, never in your head.

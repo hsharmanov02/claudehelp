@@ -501,6 +501,7 @@ class App:
                 if a.is_browser and browser_auto:
                     pa["status"] = "done"
                     r = tools.execute_browser(a, self.browser)
+                    self._page_changed()
                     self._note_block(a, r)
                     pa["result"] = self._short(r)
                     results.append(r)
@@ -607,14 +608,21 @@ class App:
                     for st in d["steps"]:
                         sa = tools.Action(st["kind"], st["path"], st["content"], st.get("extra", ""))
                         r = tools.execute_browser(sa, self.browser)
-                        outs.append(f"{sa.label}: " + (r if st is d["steps"][-1] or r.startswith("Browser error") else r.split("\n", 1)[0]))
                         if r.startswith("Browser error"):
+                            outs.append(f"{sa.label}: {r}")
                             break
+                        outs.append(f"{sa.label}: done")
                     pa["result"] = f"Did {len(outs)} of {len(d['steps'])} steps"
-                    self._msg("tool", "\n\n".join(outs))
+                    try:
+                        page = self.browser.describe(4000)
+                    except Exception as e:
+                        page = f"(couldn't read the page: {e})"
+                    self._msg("tool", "\n".join(outs) + "\n\nThe page now (check it shows what you expected):\n" + page)
+                    self._page_changed()
                 elif a.is_browser:
                     r = tools.execute_browser(a, self.browser)
                     self._note_block(a, r)
+                    self._page_changed()
                     pa["result"] = self._short(r)
                     self._msg("tool", r)
                 elif a.kind == "run":
@@ -648,6 +656,10 @@ class App:
         code = re.sub(r"/\*[\s\S]*?\*/", "", a.content)
         code = re.sub(r"(?m)(--|#|//)[^\n'\"]*$", "", code)
         return (a.path, re.sub(r"\s+", " ", code).strip())
+
+    def _page_changed(self):
+        """After clicks or typing the page is different, so reading or reopening it is allowed again."""
+        self.done_lookups = {k: v for k, v in self.done_lookups.items() if k[0] not in ("browse", "page", "fetch")}
 
     def _files_changed(self):
         """After a write/mkdir/delete, folder listings and file reads may differ, so allow them again."""
