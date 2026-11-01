@@ -20,7 +20,7 @@ Keep the `engines` folder next to `LocalForge.exe`.
 
 ## What it can do
 
-- Chat with uncensored / abliterated GGUF models (only those are listed). Search all of Hugging Face from the Models tab.
+- Chat with uncensored GGUF models (only those are listed; abliterated models are left out). Search all of Hugging Face from the Models tab.
 - Uses your graphics card automatically through the Vulkan engine (NVIDIA, AMD and Intel), and falls back to the CPU.
 - Finds, lists, reads, writes, opens and deletes files anywhere on your PC (indexes your drives so it can find things by name or type).
   Writing, running and opening need your click on an approval card unless you turn on auto-approve; deletes always ask.

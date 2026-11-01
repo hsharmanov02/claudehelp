@@ -210,7 +210,7 @@ function renderModels() {
   const hadFocus = document.activeElement?.id === "search";
   el.innerHTML = `
     <h1>Models</h1>
-    <p class="sub">Only uncensored / abliterated models are shown. Files come from Hugging Face and are saved in ${esc(S.modelsDir)}.</p>
+    <p class="sub">Only uncensored models are shown (abliterated ones are left out). Files come from Hugging Face and are saved in ${esc(S.modelsDir)}.</p>
     <div class="grid">
       <div class="card stack">
         <div class="row"><h2 style="margin:0">Best for your PC</h2><div class="spacer"></div>
