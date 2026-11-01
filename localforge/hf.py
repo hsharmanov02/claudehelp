@@ -24,7 +24,7 @@ def is_uncensored(name: str) -> bool:
     return any(m in n for m in UNCENSORED_MARKERS)
 
 
-QUANT_RE = re.compile(r"(IQ\d_\w+?|Q\d_K_[SML]|Q\d_K|Q\d_\d|F16|BF16|F32)(?=[.-])", re.I)
+QUANT_RE = re.compile(r"(MXFP4|IQ\d_\w+?|Q\d_K_[SML]|Q\d_K|Q\d_\d|F16|BF16|F32)(?=[._-])", re.I)
 SPLIT_RE = re.compile(r"-(\d{5})-of-(\d{5})\.gguf$", re.I)
 
 
@@ -144,14 +144,20 @@ def params_of(name: str):
     return max(vals) if vals else None
 
 
+KNOWN_MOE = {"gpt-oss-20b": 3.6, "gpt-oss-120b": 5.1}   # mixture-of-experts models without A3B-style names
+
+
 def active_params_of(name: str):
-    m = re.search(r"A(\d+(?:\.\d+)?)B", name, re.I)
-    return float(m.group(1)) if m else None
+    m = re.search(r"(?<![a-z])A(\d+(?:\.\d+)?)B", name, re.I)
+    if m:
+        return float(m.group(1))
+    n = name.lower()
+    return next((v for k, v in KNOWN_MOE.items() if k in n), None)
 
 
 QUANT_RANK = {
     "Q8_0": 1.06, "Q6_K": 1.05, "Q5_K_M": 1.03, "Q5_K_S": 1.02, "Q4_K_M": 1.0,
-    "Q4_K_S": 0.97, "IQ4_XS": 0.96, "Q4_0": 0.95, "IQ4_NL": 0.95,
+    "Q4_K_S": 0.97, "IQ4_XS": 0.96, "Q4_0": 0.95, "IQ4_NL": 0.95, "MXFP4": 1.0,
 }
 TRUSTED = ("bartowski", "mradermacher", "unsloth", "lmstudio-community", "quantfactory", "huihui-ai", "mlabonne")
 EXCLUDED = ("vision", "-vl", "mmproj", "embed", "reward", "draft", "audio", "tts", "rerank", "-it-qat-q4",
@@ -170,7 +176,7 @@ def est_speed(file_size: int, pc: PcInfo, active_ratio: float = 1.0) -> float:
     if vram >= 4 * GB and file_size <= usable:
         return gpu_bw / moved
     if vram >= 4 * GB and usable > 0:
-        on_gpu = usable / file_size
+        on_gpu = min(1.0, usable / file_size)
         t = (moved * on_gpu) / gpu_bw + (moved * (1 - on_gpu)) / cpu_bw
         return 1 / t
     return cpu_bw / moved
@@ -183,6 +189,8 @@ QUERIES = [
     "8B uncensored", "12B uncensored", "24B uncensored",
     "qwen3 abliterated", "qwen3 30b a3b abliterated", "gemma 3 abliterated", "llama 3.1 8b abliterated",
     "mistral small abliterated", "mistral nemo abliterated", "qwen2.5 coder abliterated", "dolphin", "deepseek r1 distill abliterated",
+    "A3B abliterated", "30B A3B abliterated", "35B A3B abliterated", "qwen3.5 35b a3b abliterated", "gpt-oss 20b abliterated",
+    "A3B uncensored", "gpt-oss 20b uncensored",
 ]
 
 
@@ -207,11 +215,12 @@ def recommend(pc: PcInfo, token: str | None, limit: int = 8) -> list[dict]:
         active = active_params_of(repo["id"])
         ratio = (active / params) if active and params else 1.0
         best, best_rank = None, 0
+        cap = min(pc.moe_budget, pc.freeDisk - 2 * GB) if ratio <= 0.3 else budget
         for f in files:
             if any(e in f.file_name.lower() for e in EXCLUDED):
                 continue
             rank = QUANT_RANK.get(f.quant)
-            if rank and 0 < f.size <= budget and rank > best_rank:
+            if rank and 0 < f.size <= cap and rank > best_rank:
                 best, best_rank = f, rank
         if not best:
             return None
@@ -316,7 +325,103 @@ def download_part(repo: str, path: str, target: Path, token: str | None, cancel:
         lock.release()
 
 
+SEGMENTS = 6                 # parallel connections for big files (one HF connection is often slow)
+SEGMENT_MIN = 256 * 1024 ** 2
+
+
+def _resolve(url, token):
+    """Follows Hugging Face's redirect to the real file host, once."""
+    for _ in range(10):
+        try:
+            r = _opener.open(_request(url, token, {"Range": "bytes=0-0"}), timeout=60)
+            ok = r.status == 206
+            r.close()
+            return url, ok
+        except urllib.error.HTTPError as e:
+            if e.code in (301, 302, 303, 307, 308):
+                url = urllib.parse.urljoin(url, e.headers.get("Location"))
+                continue
+            if e.code in (401, 403):
+                raise RuntimeError("This model is gated. Add a Hugging Face token in Settings.") from None
+            raise RuntimeError(f"Server returned HTTP {e.code}") from None
+    raise RuntimeError("Too many redirects")
+
+
+def _download_parallel(repo, path, target: Path, token, cancel, on_bytes, size) -> bool:
+    """Downloads a big file over several connections. Resumable through a .segs file. False = not possible."""
+    import json as _json
+    import os
+    import time
+    part = target.with_name(target.name + ".part")
+    segs_file = target.with_name(target.name + ".segs")
+    segs = None
+    if part.exists() and segs_file.exists():
+        try:
+            segs = _json.loads(segs_file.read_text())
+            if part.stat().st_size != size or segs[-1][1] != size - 1:
+                segs = None
+        except Exception:
+            segs = None
+    if segs is None:
+        if part.exists() and part.stat().st_size > 0:
+            return False            # an older single-connection download: keep resuming that way
+        url, ranged = _resolve(download_url(repo, path), token)
+        if not ranged:
+            return False
+        step = size // SEGMENTS
+        segs = [[i * step, size - 1 if i == SEGMENTS - 1 else (i + 1) * step - 1, 0] for i in range(SEGMENTS)]
+        with open(part, "wb") as f:
+            f.truncate(size)
+        segs_file.write_text(_json.dumps(segs))
+    url, _ = _resolve(download_url(repo, path), token)
+    on_bytes(sum(sg[2] for sg in segs), reset=True)
+    errors, lock = [], threading.Lock()
+
+    def worker(sg):
+        tries = 0
+        while sg[0] + sg[2] <= sg[1] and not cancel.is_set():
+            try:
+                rq = _request(url, token, {"Range": f"bytes={sg[0] + sg[2]}-{sg[1]}"})
+                with _opener.open(rq, timeout=60) as r, open(part, "r+b") as f:
+                    if r.status != 206:
+                        raise RuntimeError("server ignored the range")
+                    f.seek(sg[0] + sg[2])
+                    while not cancel.is_set():
+                        chunk = r.read(512 * 1024)
+                        if not chunk:
+                            break
+                        f.write(chunk)
+                        with lock:
+                            sg[2] += len(chunk)
+                        on_bytes(len(chunk))
+                tries = 0
+            except Exception as e:
+                tries += 1
+                if tries > 6:
+                    errors.append(str(e))
+                    return
+                time.sleep(min(30, 2 ** tries))
+
+    threads = [threading.Thread(target=worker, args=(sg,), daemon=True) for sg in segs]
+    for t in threads:
+        t.start()
+    while any(t.is_alive() for t in threads):
+        time.sleep(1.5)
+        with lock:
+            segs_file.write_text(_json.dumps(segs))
+    segs_file.write_text(_json.dumps(segs))
+    if cancel.is_set():
+        raise InterruptedError("Cancelled")
+    if errors or any(sg[0] + sg[2] <= sg[1] for sg in segs):
+        raise RuntimeError("Download was cut off" + (f" ({errors[0]})" if errors else "") + ". Click download again to resume.")
+    segs_file.unlink(missing_ok=True)
+    _replace_with_retry(part, target)
+    return True
+
+
 def _download_locked(repo, path, target: Path, token, cancel, on_bytes, expected_size):
+    if expected_size >= SEGMENT_MIN and _download_parallel(repo, path, target, token, cancel, on_bytes, expected_size):
+        return
     part = target.with_name(target.name + ".part")
     start = part.stat().st_size if part.exists() else 0
     if expected_size and start > expected_size:

@@ -54,6 +54,12 @@ class PcInfo:
         # CPU only: memory bandwidth limits speed, so keep models modest.
         return min(int(ram * 0.4), 9 * GB)
 
+    @property
+    def moe_budget(self) -> int:
+        """Mixture-of-experts models (e.g. 30B-A3B) only touch a few GB per token, so their experts can sit in
+        system RAM while the rest runs on the graphics card. They can be much bigger than VRAM and stay fast."""
+        return int(max(self.vram, 0) * 0.85 + self.totalRam * 0.55)
+
     def to_dict(self):
         d = asdict(self)
         d["vram"] = self.vram
