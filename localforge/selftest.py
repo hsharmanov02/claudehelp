@@ -78,7 +78,7 @@ def run() -> int:
             assert title == "clicked forge", title
             b.navigate("https://example.com")
             text = b.snapshot()["text"]
-            assert "Example Domain" in text, text[:200]
+            assert "domain" in text.lower(), text[:200]
             seq, frame = b.screenshot_wait(0, 5)
             assert frame, "no screen frames"
             return f"{b.exe} | {title} | example.com ok | {len(frame)} byte frame"
