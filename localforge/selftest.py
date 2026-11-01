@@ -90,6 +90,17 @@ def run() -> int:
             b.close()
     check("built-in browser (open, read, type, click, script)", browser_test)
 
+    def web_search():
+        from .browser import Browser
+        b = Browser()
+        try:
+            r = b.search("llama.cpp github")
+            assert "1." in r and "http" in r, r[:300]
+            return r.splitlines()[0] + " | " + r.splitlines()[1][:80]
+        finally:
+            b.close()
+    check("web search in the browser", web_search, required=False)
+
     results = check("hugging face search", lambda: [r["id"] for r in hf.search("qwen", None)[:5]])
     if pc:
         check("recommendations", lambda: [(p["file"]["repo"], p["file"]["fileName"], p["reason"]) for p in hf.recommend(pc, None, 5)], required=False)
