@@ -242,8 +242,13 @@ class App:
             return m
 
     def clear_chat(self):
+        self.queued = []
         if self.generating:
-            return
+            self.stop()                  # stop the reply, then clear (used to be ignored silently)
+            for _ in range(50):
+                if not self.generating:
+                    break
+                time.sleep(0.1)
         with self.lock:
             self.messages.clear()
             self.touch()
@@ -255,7 +260,12 @@ class App:
 
     def send(self, text: str, attachment: str | None = None):
         text = (text or "").strip()
-        if not text or self.generating or self.loading:
+        if not text:
+            return
+        if self.generating or self.loading:
+            # Busy: keep it and send it as soon as the current reply finishes.
+            self.queued = getattr(self, "queued", []) + [(text, attachment)]
+            self._msg("note", "Got it. This will be sent when the current reply finishes.")
             return
         model_text, display = None, text
         if attachment:
@@ -307,7 +317,14 @@ class App:
                 self.generating = False
                 self.save_chat()
                 self.touch()
+                self._send_queued()
         threading.Thread(target=job, daemon=True).start()
+
+    def _send_queued(self):
+        q = getattr(self, "queued", [])
+        if q and not self.generating:
+            text, att = q.pop(0)
+            self.send(text, att)
 
     def _file_context(self, text: str) -> str:
         self.index.ensure_fresh(wait=True)
@@ -513,7 +530,7 @@ class App:
                     results.append(f"You already did this ({a.label}) and got the result above. "
                                    "Do not repeat it. Use what you have and answer the user now.")
                     continue
-                if a.kind == "run" and self._code_key(a) in self.failed_code:
+                if a.kind in ("run", "js") and self._code_key(a) in self.failed_code:
                     self.repeats += 1
                     results.append("That exact code already failed or the user said no to it. Don't run it again. "
                                    "Fix it differently, or answer the user with what you have.")
@@ -660,6 +677,7 @@ class App:
                     for st in d["steps"]:
                         sa = tools.Action(st["kind"], st["path"], st["content"], st.get("extra", ""))
                         r = tools.execute_browser(sa, self.browser)
+                        self._note_js(sa, r)
                         if r.startswith("Browser error"):
                             outs.append(f"{sa.label}: {r}")
                             break
@@ -709,6 +727,7 @@ class App:
                 self.generating = False
                 self.save_chat()
                 self.touch()
+                self._send_queued()
         threading.Thread(target=job, daemon=True).start()
 
     def _site_for(self, a: tools.Action) -> str:
@@ -725,7 +744,7 @@ class App:
 
     def _page_changed(self):
         """After clicks or typing the page is different, so reading or reopening it is allowed again."""
-        self.done_lookups = {k: v for k, v in self.done_lookups.items() if k[0] not in ("browse", "page", "fetch")}
+        self.done_lookups = {k: v for k, v in self.done_lookups.items() if k[0] not in ("browse", "page", "fetch", "extract")}
 
     def _files_changed(self, a=None):
         """After a write/mkdir/delete, folder listings, file reads and pages may differ, so allow them again."""
@@ -783,7 +802,13 @@ class App:
         d["steps"].append(a.to_dict())
         d["label"] = f"Do {len(d['steps'])} browser steps: " + "; ".join(st["label"] for st in d["steps"])[:300]
 
+    def _note_js(self, a: tools.Action, result: str):
+        if a.kind == "js" and (result.startswith("Browser error") or "returned nothing" in result[:80]
+                               or re.search(r"^Script result:\s*(\[\]|null|\{\})\s*$", result)):
+            self.failed_code.add(self._code_key(a))
+
     def _note_block(self, a: tools.Action, result: str):
+        self._note_js(a, result)
         if "This site blocked the browser" in result:
             site = self._site_for(a)
             if site:
@@ -795,8 +820,11 @@ class App:
             return
         pa["status"] = "rejected"
         d = pa["action"]
-        if d["kind"] == "run":
-            self.failed_code.add(self._code_key(tools.Action("run", d["path"], d["content"])))
+        if d["kind"] in ("run", "js"):
+            self.failed_code.add(self._code_key(tools.Action(d["kind"], d["path"], d["content"])))
+        for st in d.get("steps", []):
+            if st["kind"] == "js":
+                self.failed_code.add(self._code_key(tools.Action("js", st["path"], st["content"])))
         self.save_chat()
         self.touch()
         msg = next((m for m in self.messages if m["id"] == msg_id), None)
@@ -817,6 +845,7 @@ class App:
                 self.generating = False
                 self.save_chat()
                 self.touch()
+                self._send_queued()
         threading.Thread(target=job, daemon=True).start()
 
     def run_snippet(self, lang: str, code: str):

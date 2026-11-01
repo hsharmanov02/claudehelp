@@ -24,6 +24,63 @@ NO_WINDOW = 0x08000000 if os.name == "nt" else 0
 WIDTH, HEIGHT = 1280, 800
 
 # Injected into every page: keep new tabs/popups in the same view, and auto-dismiss nothing else.
+EXTRACT_JS = r"""(q) => {
+  const vis = el => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
+  const clean = t => (t || '').trim().replace(/\s+/g, ' ');
+  const mark = (el, t) => {
+    // Up/down shown only by colour, class or icon becomes a visible ▲/▼.
+    if (!/%|^[-+]?[$£€]?[\d.,]+/.test(t) || /^[+\-−▲▼]/.test(t)) return t;
+    const html = el.innerHTML.slice(0, 400);
+    const leaf = el.querySelector('span,div,p,b') || el;
+    const c = (getComputedStyle(leaf).color.match(/\d+/g) || [0, 0, 0]).map(Number);
+    if (/(down|neg|loss|decrease|red|danger|fall)/i.test(html + el.className) || (c[0] > 150 && c[1] < 120 && c[2] < 120)) return '▼' + t;
+    if (/(\bup\b|caret-up|pos|gain|increase|green|success|rise)/i.test(html + el.className) || (c[1] > 130 && c[0] < 120)) return '▲' + t;
+    return t;
+  };
+  const link = el => { const a = [...el.querySelectorAll('a[href]')].find(a => clean(a.innerText).length > 8 && a.href.startsWith('http'));
+    return a ? ' -> ' + a.href.slice(0, 160) : ''; };
+  const words = clean(q).toLowerCase().split(' ').filter(Boolean);
+  const score = el => words.length ? words.filter(w => el.innerText.toLowerCase().includes(w)).length : 0;
+  const parts = [];
+  // 1) Tables (header cells can be <th>, also inside rows)
+  const tables = [...document.querySelectorAll('table')].filter(t => vis(t) && t.rows.length >= 3)
+    .sort((a, b) => score(b) - score(a) || b.rows.length - a.rows.length).slice(0, 3);
+  tables.forEach((t, i) => {
+    const rows = [...t.rows].filter(vis).slice(0, 60).map(r =>
+      [...r.cells].map(c => mark(c, clean(c.innerText))).filter(x => x).join(' | ') + link(r)).filter(x => x.replace(/[ |]/g, ''));
+    parts.push(`Table ${i + 1} (${t.rows.length} rows${t.rows.length > 60 ? ', first 60 shown' : ''}):\n` + rows.join('\n'));
+  });
+  // 2) Repeated items (cards, search results, product tiles)
+  const groups = [];
+  for (const p of document.querySelectorAll('body *')) {
+    if (p.closest('table') || !vis(p) || p.children.length < 5) continue;
+    const sig = el => el.tagName + '.' + ([...el.classList].filter(c => !/\d/.test(c)).slice(0, 2).join('.') || el.getAttribute('data-component-type') || '');
+    const counts = {};
+    for (const c of p.children) counts[sig(c)] = (counts[sig(c)] || 0) + 1;
+    const [best, n] = Object.entries(counts).sort((a, b) => b[1] - a[1])[0];
+    if (n < 5) continue;
+    const items = [...p.children].filter(c => sig(c) === best && vis(c) && clean(c.innerText).length > 20);
+    if (items.length < 5) continue;
+    const avg = items.reduce((s, c) => s + clean(c.innerText).length, 0) / items.length;
+    if (avg > 1500) continue;
+    groups.push({ items, value: items.length * Math.min(avg, 300) + score(p) * 5000 });
+  }
+  groups.sort((a, b) => b.value - a.value);
+  const used = new Set();
+  for (const g of groups.slice(0, 6)) {
+    if (parts.length >= 5 || g.items.some(x => used.has(x))) continue;
+    g.items.forEach(x => used.add(x));
+    const rows = g.items.slice(0, 40).map((it, i) => {
+      const texts = []; const w = document.createTreeWalker(it, NodeFilter.SHOW_TEXT); let n;
+      while ((n = w.nextNode())) { const t = clean(n.textContent); if (t && !texts.includes(t) && n.parentElement && vis(n.parentElement)) texts.push(mark(n.parentElement, t)); }
+      return (i + 1) + '. ' + texts.join(' | ').slice(0, 300) + link(it);
+    });
+    parts.push(`List of ${g.items.length} items${g.items.length > 40 ? ' (first 40 shown)' : ''}:\n` + rows.join('\n'));
+  }
+  return parts.join('\n\n').slice(0, 9000);
+}"""
+
+
 COOKIE_JS = r"""(() => {
   const words = /^(reject all|reject all cookies|reject|decline|decline all|refuse all|necessary only|only necessary|use necessary cookies only|essential only|only essential cookies|continue without accepting)$/i;
   const roots = [document, ...[...document.querySelectorAll('iframe')].map(f => { try { return f.contentDocument; } catch (e) { return null; } }).filter(Boolean)];
@@ -430,9 +487,11 @@ class Browser:
         finally:
             self._pending.pop(i, None)
 
-    def eval(self, expr: str, timeout=30):
-        r = self.send("Runtime.evaluate", {"expression": expr, "returnByValue": True, "awaitPromise": True,
-                                           "userGesture": True}, timeout)
+    def eval(self, expr: str, timeout=30, repl=False):
+        params = {"expression": expr, "returnByValue": True, "awaitPromise": True, "userGesture": True}
+        if repl:
+            params["replMode"] = True    # like the DevTools console: last expression is the result, let/const can repeat
+        r = self.send("Runtime.evaluate", params, timeout)
         if r.get("exceptionDetails"):
             d = r["exceptionDetails"]
             raise RuntimeError((d.get("exception") or {}).get("description") or d.get("text") or "script error")
@@ -572,6 +631,17 @@ class Browser:
             if not ok:
                 raise RuntimeError(f'No option "{text}" in [{n}]')
             return
+        kind = self.eval(f"(document.querySelector('[data-lf-id=\"{int(n)}\"]').type || '').toLowerCase()")
+        if kind in ("time", "date", "datetime-local", "month", "week", "number", "range", "color"):
+            # These inputs ignore typed keys in headless mode: set the value the way a page script would.
+            self.eval(f"""(() => {{ const el = document.querySelector('[data-lf-id="{int(n)}"]');
+                const set = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+                set.call(el, {json.dumps(text)}); el.dispatchEvent(new Event('input', {{bubbles: true}}));
+                el.dispatchEvent(new Event('change', {{bubbles: true}})); }})()""")
+            if submit:
+                self.key("enter")
+                self.wait_loaded(10)
+            return
         self.click_xy(x, y)
         self.eval(f"""(() => {{ const el = document.querySelector('[data-lf-id="{int(n)}"]'); el.focus();
             if ('value' in el) {{ el.select && el.select(); }} else {{ document.execCommand('selectAll'); }} }})()""")
@@ -580,10 +650,20 @@ class Browser:
             self.key("enter")
             self.wait_loaded(10)
 
+    def extract(self, query: str = "") -> str:
+        """Pulls tables and repeated lists (search results, products, stories) off the page as rows."""
+        self.ensure()
+        out = self.eval(f"({EXTRACT_JS})({json.dumps(query)})", 20) or ""
+        return out or "No tables or repeated lists found on this page. Read it with <page/> or use <js>."
+
     def run_js(self, code: str) -> str:
         self.ensure()
-        expr = f"(async () => {{ {code} }})()" if "return" in code else code
-        v = self.eval(expr)
+        try:
+            v = self.eval(code, repl=True)     # last expression is the result, like the browser console
+        except RuntimeError as e:
+            if "Illegal return" not in str(e):
+                raise
+            v = self.eval(f"(async () => {{\n{code}\n}})()")   # the script uses a top-level return
         if v is None:
             return "(script ran, returned nothing)"
         return v if isinstance(v, str) else json.dumps(v, indent=1)[:8000]

@@ -31,7 +31,7 @@ class Action:
     @property
     def browser_read(self) -> bool:
         """Browser actions that only look (run without asking)."""
-        return self.kind in ("search", "browse", "page", "scroll", "fetch")
+        return self.kind in ("search", "browse", "page", "scroll", "fetch", "extract")
 
     @property
     def label(self) -> str:
@@ -41,7 +41,8 @@ class Action:
             "delete": f"Delete {self.path}", "open": f"Open {self.path}",
             "run": f"Run {self.path} code ({len(self.content.splitlines())} lines)",
             "search": f'Search the web for "{self.path}"', "fetch": f"Fetch {self.path} through the browser", "browse": f"Open {self.path} in the browser",
-            "page": "Read the browser page", "scroll": f"Scroll the page {self.path}",
+            "page": "Read the browser page",
+            "extract": "Extract tables and lists from the page" + (f' ("{self.path}")' if self.path else ""), "scroll": f"Scroll the page {self.path}",
             "click": f"Click [{self.path}] in the browser", "press": f"Press {self.path} in the browser",
             "type": f'Type "{self.content[:60]}" into [{self.path}]' + (" and submit" if self.extra == "submit" else ""),
             "js": f"Run a script on the browser page ({len(self.content.splitlines())} lines)",
@@ -51,7 +52,7 @@ class Action:
         return {"kind": self.kind, "path": self.path, "content": self.content, "extra": self.extra, "label": self.label}
 
 
-BROWSER_KINDS = ("search", "browse", "page", "scroll", "click", "type", "press", "js", "fetch")
+BROWSER_KINDS = ("search", "browse", "page", "scroll", "click", "type", "press", "js", "fetch", "extract")
 
 
 THINK = re.compile(r"<think>[\s\S]*?(</think>|$)", re.I)
@@ -63,6 +64,7 @@ B_SEARCH = re.compile(r'<search\s+(?:query|q)\s*=\s*"([^"]+)"\s*/?>', re.I)
 B_BROWSE = re.compile(r'<(?:browse|goto|navigate)\s+(?:url|href)\s*=\s*"([^"]+)"\s*/?>', re.I)
 B_FETCH = re.compile(r'<fetch\s+(?:url|href)\s*=\s*"([^"]+)"\s*/?>', re.I)
 B_PAGE = re.compile(r'<page\s*/?>', re.I)
+B_EXTRACT = re.compile(r'<extract(?:\s+(?:query|q|what|about)\s*=\s*"([^"]*)")?\s*/?>', re.I)
 B_SCROLL = re.compile(r'<scroll(?:\s+(?:dir|direction)\s*=\s*"([^"]*)")?\s*/?>', re.I)
 B_CLICK = re.compile(r'<click\s+(?:n|id|element)\s*=\s*"?(\d+)"?\s*/?>', re.I)
 B_PRESS = re.compile(r'<press\s+key\s*=\s*"([^"]+)"\s*/?>', re.I)
@@ -124,6 +126,7 @@ YOU HAVE YOUR OWN WEB BROWSER (the user watches it live in the Browser tab and s
 <browse url="FULL URL"/>                      open a page; you get its text and numbered clickable/fillable elements
 <fetch url="FULL URL"/>                       get raw data (JSON, CSV, text, APIs) through the browser, logged in as the user
 <page/>                                       read the current page again
+<extract query="WHAT YOU NEED"/>              get the page's tables and lists (results, products, prices, stories) as clean rows with links: USE THIS FIRST to pull data off a page
 <click n="12"/>                               click element [12]
 <type n="5">text to enter</type>              fill input [5]; add submit="true" to press Enter after
 <press key="Enter"/>                          press a key (Enter, Tab, Escape, PageDown, ArrowDown...)
@@ -153,8 +156,9 @@ Rules:
 - Your answer must match the run/browser output exactly. Copy numbers and rows from it; never invent results.
   If the output doesn't show what was asked, say so and fix it instead of claiming success.
 - Do any sum, average or percentage in code, never in your head.
-- To extract data from a web page, never retype the page into code. Use <js> with document.querySelectorAll on the
-  live page and return JSON; first check the real class names with a small <js> before writing the full extractor.
+- To pull data off a web page, use <extract/> first. Only if that misses something, use <js> with
+  document.querySelectorAll (check real class names with a small <js> first). Never retype page text into code.
+- A <js> script's result is its last expression (like the browser console), e.g. end with: data
 - Signs, up/down and done/completed often show only as colour or icons: use the "Visual cues" section of the page.
 - Only save a file when the user asks for one. To save extracted data, generate it with code that you actually run.
 - If a check returns 0, empty, or an error, your code is broken: fix it and test again before reporting.
@@ -200,6 +204,8 @@ def parse(raw: str) -> list[Action]:
         found.append((m.start(), Action("fetch", m.group(1).strip())))
     for m in B_PAGE.finditer(reply):
         found.append((m.start(), Action("page", "")))
+    for m in B_EXTRACT.finditer(reply):
+        found.append((m.start(), Action("extract", (m.group(1) or "").strip())))
     for m in B_SCROLL.finditer(reply):
         found.append((m.start(), Action("scroll", (m.group(1) or "down").strip().lower())))
     for m in B_CLICK.finditer(reply):
@@ -365,6 +371,8 @@ def execute_browser(a: Action, browser) -> str:
             browser.navigate(a.path)
             r = browser.describe()
             return r + blocked_hint(r)
+        if a.kind == "extract":
+            return "Data on the page (tables and repeated lists; ▲/▼ = shown as up/down by colour or icon):\n" + browser.extract(a.path)
         if a.kind == "page":
             r = browser.describe()
             return r + blocked_hint(r)

@@ -249,7 +249,7 @@ function md(src) {
     }
     let h = esc(part)
       .replace(/&lt;(write|run|type|js)[\s\S]*?(&lt;\/\1&gt;|$)/g, "")       // tool tags are shown as cards instead
-      .replace(/&lt;(find|list|read|mkdir|delete|open|search|browse|page|click|press|scroll)(\s[^&]*?)?\/?&gt;/g, m => `<span class="pill">${m}</span>`)
+      .replace(/&lt;(find|list|read|mkdir|delete|open|search|browse|page|extract|click|press|scroll)(\s[^&]*?)?\/?&gt;/g, m => `<span class="pill">${m}</span>`)
       .replace(/`([^`\n]+)`/g, "<code>$1</code>")
       .replace(/\*\*([^*\n]+)\*\*/g, "<b>$1</b>")
       .replace(/(^|[^*])\*([^*\n]+)\*/g, "$1<i>$2</i>")
