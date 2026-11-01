@@ -1,0 +1,94 @@
+name: Build LocalForge Desktop (Windows)
+
+on:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  LLAMA_TAG: b12025
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install build tools
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt pyinstaller pytest
+
+      - name: Unit tests
+        run: python -m pytest -q tests
+
+      - name: Fetch llama.cpp engines (${{ env.LLAMA_TAG }}) - CPU and Vulkan (any GPU)
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          New-Item -ItemType Directory -Force dl | Out-Null
+          gh release download $env:LLAMA_TAG -R ggml-org/llama.cpp -D dl -p "*bin-win-cpu-x64.zip" -p "*bin-win-vulkan-x64.zip"
+          Get-ChildItem dl
+          foreach ($kind in @("cpu", "vulkan")) {
+            $zip = Get-ChildItem dl -Filter "*bin-win-$kind-x64.zip" | Select-Object -First 1
+            if (-not $zip) { throw "llama.cpp $kind build not found in release $env:LLAMA_TAG" }
+            $tmp = "dl\x-$kind"
+            Expand-Archive $zip.FullName -DestinationPath $tmp -Force
+            $server = Get-ChildItem $tmp -Recurse -Filter "llama-server.exe" | Select-Object -First 1
+            if (-not $server) { throw "llama-server.exe missing from $($zip.Name)" }
+            New-Item -ItemType Directory -Force "engines\$kind" | Out-Null
+            Copy-Item "$($server.DirectoryName)\*" "engines\$kind\" -Recurse -Force
+            Get-ChildItem "engines\$kind" | Select-Object Name, Length | Format-Table | Out-String | Write-Host
+          }
+
+      - name: Build LocalForge.exe
+        run: pyinstaller --noconfirm --clean LocalForge.spec
+
+      - name: Add engines and readme
+        shell: pwsh
+        run: |
+          Copy-Item engines "dist\LocalForge\engines" -Recurse -Force
+          Copy-Item README.md "dist\LocalForge\README.txt"
+
+      - name: Self-test (real tiny uncensored model, CPU engine, code runners)
+        shell: pwsh
+        run: |
+          $env:LOCALFORGE_SELFTEST_LOG = "$PWD\selftest.txt"
+          $p = Start-Process -FilePath "dist\LocalForge\LocalForge.exe" -ArgumentList "--selftest" -Wait -PassThru
+          Get-Content selftest.txt
+          if ($p.ExitCode -ne 0) { throw "Self-test failed (exit $($p.ExitCode))" }
+
+      - name: Zip
+        shell: pwsh
+        run: Compress-Archive -Path "dist\LocalForge" -DestinationPath "LocalForge-Desktop-Windows.zip" -CompressionLevel Optimal
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: LocalForge-Desktop-Windows
+          path: |
+            LocalForge-Desktop-Windows.zip
+            selftest.txt
+          if-no-files-found: ignore
+
+      - name: Publish release "desktop-latest"
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: desktop-latest
+          name: LocalForge Desktop (Windows) latest build
+          body: |
+            Built from commit ${{ github.sha }}.
+            Download LocalForge-Desktop-Windows.zip, right-click it > Extract All, then open the LocalForge folder and double-click LocalForge.exe.
+          files: |
+            LocalForge-Desktop-Windows.zip
+            selftest.txt
+          make_latest: false
+          prerelease: false

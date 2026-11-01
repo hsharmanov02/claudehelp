@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+build/
+dist/
+engines/
+dl/
+selftest.txt
+.pytest_cache/

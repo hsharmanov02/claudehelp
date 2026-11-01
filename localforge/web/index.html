@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LocalForge</title>
+<link rel="stylesheet" href="/static/app.css">
+<script>window.LF_TOKEN = "__LF_TOKEN__";</script>
+</head>
+<body>
+<div id="app">
+  <nav id="nav">
+    <div class="brand"><span class="logo">⚒</span> LocalForge</div>
+    <button data-tab="home" class="tab active"><span>🏠</span> Home</button>
+    <button data-tab="models" class="tab"><span>📦</span> Models</button>
+    <button data-tab="chat" class="tab"><span>💬</span> Chat</button>
+    <button data-tab="files" class="tab"><span>📁</span> Files</button>
+    <div class="nav-foot">
+      <div id="nav-model" class="muted small"></div>
+      <div id="nav-status" class="small"></div>
+    </div>
+  </nav>
+  <main>
+    <section id="tab-home" class="page active"></section>
+    <section id="tab-models" class="page"></section>
+    <section id="tab-chat" class="page">
+      <div id="chat-head">
+        <div id="chat-model" class="muted"></div>
+        <div class="spacer"></div>
+        <label class="toggle small"><input type="checkbox" id="auto-approve"> Auto-approve (deletes always ask)</label>
+        <button class="ghost" id="clear-chat">New chat</button>
+      </div>
+      <div id="messages"></div>
+      <div id="composer">
+        <div id="attachment" class="chip hidden"></div>
+        <div class="row">
+          <button class="ghost icon" id="attach" title="Attach a file">📎</button>
+          <textarea id="input" rows="1" placeholder="Ask anything. Enter to send, Shift+Enter for a new line."></textarea>
+          <button id="send" class="primary">Send</button>
+          <button id="stop" class="danger hidden">Stop</button>
+        </div>
+      </div>
+    </section>
+    <section id="tab-files" class="page"></section>
+  </main>
+</div>
+<div id="modal" class="hidden"><div class="modal-box"><div class="modal-head"><b id="modal-title"></b><div class="spacer"></div><span id="modal-actions"></span><button class="ghost" id="modal-close">✕</button></div><div id="modal-body"></div></div></div>
+<div id="toast" class="hidden"></div>
+<script src="/static/app.js"></script>
+</body>
+</html>
