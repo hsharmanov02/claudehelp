@@ -43,19 +43,25 @@
       </div>
     </section>
     <section id="tab-browser" class="page">
+     <div id="br-main">
       <div id="br-bar">
         <button class="ghost icon" id="br-back" title="Back">←</button>
         <button class="ghost icon" id="br-fwd" title="Forward">→</button>
         <button class="ghost icon" id="br-reload" title="Reload">⟳</button>
         <form id="br-form"><input id="br-url" placeholder="Search or type a web address" spellcheck="false" autocomplete="off"></form>
-        <button class="small" id="br-ask" title="Have the AI read this page">🤖 Ask AI about this page</button>
+        <button class="small" id="br-ask" title="Open the AI next to this page">🤖 Ask AI about this page</button>
       </div>
       <div id="br-sub" class="small">
         <span id="br-title" class="muted"></span><div class="spacer"></div>
         <label class="toggle"><input type="checkbox" id="br-auto"> Let the AI click and type here without asking</label>
       </div>
       <div id="br-banner" class="banner hidden"></div>
-      <div id="br-view" tabindex="0"><img id="br-img" alt="" draggable="false"><div id="br-empty" class="muted">Starting the browser…</div><div id="br-loading" class="hidden"></div></div>
+      <div id="br-view" tabindex="0"><img id="br-img" alt="" draggable="false"><div id="br-empty" class="muted">Starting the browser…</div><div id="br-loading" class="hidden"></div><div id="br-doing" class="hidden"></div></div>
+     </div>
+     <div id="br-split" title="Drag to resize"></div>
+     <aside id="br-side">
+       <div id="side-head"><b>🤖 AI on this page</b><div class="spacer"></div><button class="ghost small" id="side-full" title="Open in the Chat tab">⤢</button><button class="ghost small" id="side-close" title="Close the panel">✕</button></div>
+     </aside>
     </section>
     <section id="tab-files" class="page"></section>
   </main>

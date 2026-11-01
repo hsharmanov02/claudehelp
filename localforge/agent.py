@@ -260,7 +260,7 @@ class App:
         self.stop_requested = True
         self.engine.stop()
 
-    def send(self, text: str, attachment: str | None = None):
+    def send(self, text: str, attachment: str | None = None, on_page: bool = False):
         text = (text or "").strip()
         if not text:
             return
@@ -277,6 +277,11 @@ class App:
                 body = f"(couldn't read file: {e})"
             model_text = f"{text}\n\nFile {attachment}:\n```\n{body}\n```"
             display = f"📎 {Path(attachment).name}\n{text}"
+        if on_page and getattr(self.browser, "running", False) and self.browser.url and self.browser.url != "about:blank":
+            # Asked from the side panel next to the browser: the question is about the page that's open.
+            model_text = (f"[I'm looking at this page in your browser: \"{self.browser.title}\" {self.browser.url}. "
+                          "My request is about it: read it with <page/> or <extract/> first, then click/type on it as needed.]\n"
+                          + (model_text or text))
         user = self._msg("user", display, model_text)
         self.steps_left = 12
         self.total_steps = 0
@@ -323,6 +328,8 @@ class App:
         threading.Thread(target=job, daemon=True).start()
 
     def _send_queued(self):
+        if (self.status or "").endswith("…") and not self.loading:
+            self.status = ""             # a finished step's "Clicking…" shouldn't linger
         q = getattr(self, "queued", [])
         if q and not self.generating:
             text, att = q.pop(0)
@@ -584,6 +591,7 @@ class App:
                 reply["actions"].append(pa)
                 self.touch()
                 if a.is_browser and browser_auto:
+                    self._set_status(a.label + "…")
                     pa["status"] = "done"
                     r = tools.execute_browser(a, self.browser)
                     r += self._extract_if_empty(a, r)
@@ -689,6 +697,7 @@ class App:
                     outs = []
                     for st in d["steps"]:
                         sa = tools.Action(st["kind"], st["path"], st["content"], st.get("extra", ""))
+                        self._set_status(sa.label + "…")
                         r = tools.execute_browser(sa, self.browser)
                         r += self._extract_if_empty(sa, r)
                         self._note_js(sa, r)
@@ -704,6 +713,7 @@ class App:
                     self._msg("tool", "\n".join(outs) + "\n\nThe page now (check it shows what you expected):\n" + page)
                     self._page_changed()
                 elif a.is_browser:
+                    self._set_status(a.label + "…")
                     r = tools.execute_browser(a, self.browser)
                     r += self._extract_if_empty(a, r)
                     self._note_block(a, r)

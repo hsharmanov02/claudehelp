@@ -146,7 +146,7 @@ def route(app, action, b, pick_file):
             app.store.add_file(path)
             app.touch()
     elif action == "send":
-        app.send(b.get("text", ""), b.get("attachment"))
+        app.send(b.get("text", ""), b.get("attachment"), bool(b.get("onPage")))
     elif action == "stop":
         app.stop()
     elif action == "clear":
@@ -211,6 +211,8 @@ def browser_action(app, op, b):
         else:
             return {"error": f"unknown browser action {op}"}
         br.error = None
+        if op not in ("resize", "start") and hasattr(app, "_page_changed"):
+            app._page_changed()          # the user changed the page: the AI must re-read it, not reuse old numbers
     except Exception as e:
         br.error = str(e)
         return {"error": str(e)}

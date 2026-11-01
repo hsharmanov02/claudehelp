@@ -36,7 +36,7 @@ async function poll() {
       S = await get("/api/state?v=" + v);
       v = S.version;
       render();
-      if (S.generating || S.runningCode || lastMsgVersion < 0 || tab === "chat") await syncMessages();
+      if (S.generating || S.runningCode || lastMsgVersion < 0 || tab === "chat" || sideOpen) await syncMessages();
     } catch (e) {
       $("#nav-status").innerHTML = '<span class="pill bad">Disconnected</span>';
       await new Promise(r => setTimeout(r, 1500));
@@ -49,7 +49,7 @@ function setTab(t) {
   document.querySelectorAll(".tab").forEach(b => b.classList.toggle("active", b.dataset.tab === t));
   document.querySelectorAll(".page").forEach(p => p.classList.toggle("active", p.id === "tab-" + t));
   if (t === "files" && filesDir === null) openDir(S?.home || "");
-  if (t === "chat") { syncMessages(); setTimeout(() => $("#input").focus(), 50); }
+  if (t === "chat") { if (sideOpen) dockChat(false); syncMessages(); setTimeout(() => $("#input").focus(), 50); }
   if (t === "browser") startBrowser();
   render();
 }
@@ -320,6 +320,11 @@ async function syncMessages() {
   const msgs = r.messages;
   if (!msgs.length) {
     rendered.clear();
+    if (sideOpen) {
+      box.innerHTML = `<div class="empty"><h2>What should I do on this page?</h2><p>I can read it, pull its data into a table, click, type and fill in forms. You'll see each step happen on the page.</p>
+      <div class="suggest">${["Summarise this page", "Extract the data on this page as a table", "Find the cheapest item here", "Go to the next page and collect the results"].map(s => `<button class="small" data-suggest="${esc(s)}">${esc(s)}</button>`).join("")}</div></div>`;
+      return;
+    }
     box.innerHTML = `<div class="empty"><h2>What do you want to do?</h2><p>Everything runs on this PC. The AI can search and read your files, write code and run it, and answer anything — no filters.</p>
       <div class="suggest">${["Find my biggest videos", "Write a Python script that renames photos by date and test it", "What's in my Downloads folder?", "Explain how transformers work, in depth"].map(s => `<button class="small" data-suggest="${esc(s)}">${esc(s)}</button>`).join("")}</div></div>`;
     return;
@@ -350,10 +355,10 @@ function send() {
   const text = $("#input").value.trim();
   if (!text) return;
   if (S && !S.loadedModel && !S.models.length) { toast("Download a model on the Models tab first."); setTab("models"); return; }
-  api("send", { text, attachment });
+  api("send", { text, attachment, onPage: sideOpen });
   $("#input").value = ""; autosize();
   attachment = null; renderAttachment();
-  if (tab !== "chat") setTab("chat");
+  if (tab !== "chat" && !sideOpen) setTab("chat");
 }
 function autosize() { const i = $("#input"); i.style.height = "auto"; i.style.height = Math.min(240, i.scrollHeight) + "px"; }
 $("#input").addEventListener("input", autosize);
@@ -500,6 +505,9 @@ function fitBrowser() {
 window.addEventListener("resize", () => { clearTimeout(window._fitT); window._fitT = setTimeout(fitBrowser, 250); });
 function renderBrowser() {
   fitBrowser();
+  const doing = $("#br-doing");
+  if (doing) { const show = S.generating && sideOpen; doing.classList.toggle("hidden", !show);
+    if (show) doing.textContent = "🤖 " + (S.status && !/ready|loaded/i.test(S.status) ? S.status : "Thinking…"); }
   const b = S.browser;
   const urlBox = $("#br-url");
   if (document.activeElement !== urlBox && b.url && b.url !== "about:blank") urlBox.value = b.url;
@@ -538,7 +546,34 @@ $("#br-back").onclick = () => api("browser/back");
 $("#br-fwd").onclick = () => api("browser/forward");
 $("#br-reload").onclick = () => api("browser/reload");
 $("#br-auto").onchange = e => api("settings", { browserAutoApprove: e.target.checked });
-$("#br-ask").onclick = () => { $("#input").value = "Read the page open in the browser (use <page/>) and summarize it."; setTab("chat"); autosize(); $("#input").focus(); };
+// ---------- AI side panel in the Browser tab (the same chat, docked next to the live page) ----------
+let sideOpen = false;
+function dockChat(on) {
+  sideOpen = on;
+  const target = on ? $("#br-side") : $("#tab-chat");
+  ["#chat-head", "#messages", "#composer"].forEach(sel => target.appendChild($(sel)));
+  $("#tab-browser").classList.toggle("side-open", on);
+  brSize = ""; setTimeout(fitBrowser, 60);
+  lastMsgVersion = -1; syncMessages().then(() => { const m = $("#messages"); m.scrollTop = m.scrollHeight; });
+}
+try { const w = localStorage.getItem("lf-side-w"); if (w) document.documentElement.style.setProperty("--side-w", w); } catch (e) {}
+$("#br-ask").onclick = () => {
+  if (tab !== "browser") setTab("browser");
+  dockChat(true);
+  const inp = $("#input");
+  if (!inp.value.trim()) inp.value = "";
+  inp.placeholder = "Ask about this page, or tell the AI what to do here (it clicks and types while you watch)";
+  autosize(); inp.focus();
+};
+$("#side-close").onclick = () => dockChat(false);
+$("#side-full").onclick = () => { dockChat(false); setTab("chat"); };
+$("#br-split").onmousedown = e => {
+  e.preventDefault();
+  const move = ev => { const w = Math.max(300, Math.min(window.innerWidth * 0.7, window.innerWidth - ev.clientX)) + "px";
+    document.documentElement.style.setProperty("--side-w", w); try { localStorage.setItem("lf-side-w", w); } catch (e) {} };
+  const up = () => { document.removeEventListener("mousemove", move); document.removeEventListener("mouseup", up); brSize = ""; fitBrowser(); };
+  document.addEventListener("mousemove", move); document.addEventListener("mouseup", up);
+};
 
 document.addEventListener("keydown", e => { if (e.key === "Escape" && !$("#modal").classList.contains("hidden")) closeModal(); });
 poll();

@@ -616,6 +616,8 @@ class Browser:
     def _center(self, n: int):
         r = self.eval(f"""(() => {{ const el = document.querySelector('[data-lf-id="{int(n)}"]');
             if (!el) return null; el.scrollIntoView({{block: 'center', inline: 'center'}});
+            const old = el.style.outline; el.style.outline = '3px solid #ff7a28'; el.style.outlineOffset = '2px';
+            setTimeout(() => {{ el.style.outline = old; el.style.outlineOffset = ''; }}, 900);
             const b = el.getBoundingClientRect(); return [b.left + b.width / 2, b.top + b.height / 2]; }})()""")
         if not r:
             raise RuntimeError(f"Element [{n}] isn't on the page any more. Read the page again.")
@@ -623,7 +625,7 @@ class Browser:
 
     def click_element(self, n: int):
         x, y = self._center(n)
-        time.sleep(0.15)
+        time.sleep(0.45)        # the orange outline shows the user what's about to be clicked
         self.click_xy(x, y)
         self.wait_loaded(8)
 
