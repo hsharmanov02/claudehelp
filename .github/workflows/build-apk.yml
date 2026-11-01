@@ -1,0 +1,50 @@
+name: Build LocalForge APK
+
+on:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Unpack uploaded source zip (if you uploaded one)
+        run: if [ -f LocalForge-source.zip ]; then unzip -o -q LocalForge-source.zip; fi
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Fetch llama.cpp (pinned release b12025)
+        run: git clone --depth 1 --branch b12025 https://github.com/ggml-org/llama.cpp app/src/main/cpp/llama.cpp
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.14.3"
+
+      - name: Build APK
+        run: gradle :app:assembleRelease --no-daemon --stacktrace
+
+      - name: Rename APK
+        run: cp app/build/outputs/apk/release/app-release.apk LocalForge.apk
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: LocalForge-apk
+          path: LocalForge.apk
+
+      - name: Publish as "latest" release (easy phone download)
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          name: LocalForge latest build
+          body: Built from commit ${{ github.sha }}. Download LocalForge.apk below and open it on your phone.
+          files: LocalForge.apk
+          make_latest: true

@@ -1,0 +1,230 @@
+// LocalForge native bridge: loads GGUF models with llama.cpp and streams tokens to Kotlin.
+#include <jni.h>
+#include <string>
+#include <vector>
+#include <atomic>
+#include <cstring>
+#include <algorithm>
+#include "llama.h"
+
+#ifdef __ANDROID__
+#include <android/log.h>
+#define LOGI(...) __android_log_print(ANDROID_LOG_INFO, "LocalForge", __VA_ARGS__)
+#define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, "LocalForge", __VA_ARGS__)
+#else
+#include <cstdio>
+#define LOGI(...) do { fprintf(stderr, __VA_ARGS__); fputc('\n', stderr); } while (0)
+#define LOGE(...) LOGI(__VA_ARGS__)
+#endif
+
+namespace {
+
+struct Engine {
+    llama_model * model = nullptr;
+    llama_context * ctx = nullptr;
+    const llama_vocab * vocab = nullptr;
+    std::atomic<bool> stop{false};
+};
+
+std::string jstr(JNIEnv * env, jstring s) {
+    if (!s) return {};
+    const char * c = env->GetStringUTFChars(s, nullptr);
+    std::string out(c ? c : "");
+    if (c) env->ReleaseStringUTFChars(s, c);
+    return out;
+}
+
+// Java's NewStringUTF uses "modified UTF-8", so we hand raw bytes to Kotlin instead.
+jbyteArray toBytes(JNIEnv * env, const std::string & s) {
+    jbyteArray arr = env->NewByteArray((jsize) s.size());
+    if (arr && !s.empty()) env->SetByteArrayRegion(arr, 0, (jsize) s.size(), (const jbyte *) s.data());
+    return arr;
+}
+
+// Number of bytes at the end of `s` that form an incomplete UTF-8 sequence.
+size_t incompleteUtf8Tail(const std::string & s) {
+    size_t n = s.size();
+    for (size_t i = 1; i <= 4 && i <= n; ++i) {
+        unsigned char c = (unsigned char) s[n - i];
+        if ((c & 0xC0) == 0x80) continue;          // continuation byte
+        size_t need = 1;
+        if ((c & 0xE0) == 0xC0) need = 2;
+        else if ((c & 0xF0) == 0xE0) need = 3;
+        else if ((c & 0xF8) == 0xF0) need = 4;
+        return need > i ? i : 0;
+    }
+    return 0;
+}
+
+std::string tokenToPiece(const llama_vocab * vocab, llama_token t) {
+    char buf[256];
+    int n = llama_token_to_piece(vocab, t, buf, sizeof(buf), 0, false);
+    if (n < 0) {
+        std::string big((size_t) -n, '\0');
+        n = llama_token_to_piece(vocab, t, big.data(), (int32_t) big.size(), 0, false);
+        return n > 0 ? big.substr(0, (size_t) n) : std::string();
+    }
+    return std::string(buf, (size_t) n);
+}
+
+} // namespace
+
+extern "C" {
+
+JNIEXPORT void JNICALL
+Java_com_localforge_app_engine_LlamaEngine_nativeInit(JNIEnv *, jclass) {
+    llama_backend_init();
+    LOGI("llama backend initialised");
+}
+
+JNIEXPORT jlong JNICALL
+Java_com_localforge_app_engine_LlamaEngine_nativeLoad(JNIEnv * env, jclass, jstring jpath, jint nCtx, jint nThreads) {
+    std::string path = jstr(env, jpath);
+    llama_model_params mp = llama_model_default_params();
+    mp.n_gpu_layers = 0;
+    llama_model * model = llama_model_load_from_file(path.c_str(), mp);
+    if (!model) {
+        LOGE("failed to load model %s", path.c_str());
+        return 0;
+    }
+    llama_context_params cp = llama_context_default_params();
+    cp.n_ctx = (uint32_t) (nCtx > 0 ? nCtx : 4096);
+    cp.n_batch = 512;
+    cp.n_ubatch = 512;
+    cp.n_threads = nThreads > 0 ? nThreads : 4;
+    cp.n_threads_batch = cp.n_threads;
+    llama_context * ctx = llama_init_from_model(model, cp);
+    if (!ctx) {
+        LOGE("failed to create context");
+        llama_model_free(model);
+        return 0;
+    }
+    auto * e = new Engine();
+    e->model = model;
+    e->ctx = ctx;
+    e->vocab = llama_model_get_vocab(model);
+    LOGI("model loaded: %s", path.c_str());
+    return (jlong) e;
+}
+
+JNIEXPORT void JNICALL
+Java_com_localforge_app_engine_LlamaEngine_nativeFree(JNIEnv *, jclass, jlong handle) {
+    auto * e = (Engine *) handle;
+    if (!e) return;
+    if (e->ctx) llama_free(e->ctx);
+    if (e->model) llama_model_free(e->model);
+    delete e;
+}
+
+JNIEXPORT void JNICALL
+Java_com_localforge_app_engine_LlamaEngine_nativeStop(JNIEnv *, jclass, jlong handle) {
+    auto * e = (Engine *) handle;
+    if (e) e->stop = true;
+}
+
+// Formats a conversation with the model's own chat template (falls back to ChatML).
+JNIEXPORT jbyteArray JNICALL
+Java_com_localforge_app_engine_LlamaEngine_nativeFormatChat(JNIEnv * env, jclass, jlong handle,
+                                                            jobjectArray roles, jobjectArray contents) {
+    auto * e = (Engine *) handle;
+    if (!e) return nullptr;
+    jsize n = env->GetArrayLength(roles);
+    std::vector<std::string> r(n), c(n);
+    std::vector<llama_chat_message> msgs(n);
+    size_t total = 0;
+    for (jsize i = 0; i < n; ++i) {
+        r[i] = jstr(env, (jstring) env->GetObjectArrayElement(roles, i));
+        c[i] = jstr(env, (jstring) env->GetObjectArrayElement(contents, i));
+        total += r[i].size() + c[i].size();
+    }
+    for (jsize i = 0; i < n; ++i) msgs[i] = { r[i].c_str(), c[i].c_str() };
+
+    const char * tmpl = llama_model_chat_template(e->model, nullptr);
+    std::vector<char> buf(total * 2 + 1024);
+    int len = llama_chat_apply_template(tmpl, msgs.data(), msgs.size(), true, buf.data(), (int32_t) buf.size());
+    if (len < 0 && tmpl) {
+        tmpl = "chatml";
+        len = llama_chat_apply_template(tmpl, msgs.data(), msgs.size(), true, buf.data(), (int32_t) buf.size());
+    }
+    if (len > (int) buf.size()) {
+        buf.resize((size_t) len + 1);
+        len = llama_chat_apply_template(tmpl, msgs.data(), msgs.size(), true, buf.data(), (int32_t) buf.size());
+    }
+    if (len < 0) return nullptr;
+    return toBytes(env, std::string(buf.data(), (size_t) len));
+}
+
+// Runs generation. Calls callback.onToken(byte[]) for each UTF-8-complete chunk;
+// returns 0 on success, negative on error (-1 prompt too long, -2 decode failure).
+JNIEXPORT jint JNICALL
+Java_com_localforge_app_engine_LlamaEngine_nativeGenerate(JNIEnv * env, jclass, jlong handle, jstring jprompt,
+                                                          jint maxTokens, jfloat temperature, jobject callback) {
+    auto * e = (Engine *) handle;
+    if (!e) return -3;
+    e->stop = false;
+
+    jclass cbClass = env->GetObjectClass(callback);
+    jmethodID onToken = env->GetMethodID(cbClass, "onToken", "([B)Z");
+    if (!onToken) return -4;
+
+    std::string prompt = jstr(env, jprompt);
+    llama_memory_clear(llama_get_memory(e->ctx), true);
+
+    int n_prompt = -llama_tokenize(e->vocab, prompt.c_str(), (int32_t) prompt.size(), nullptr, 0, true, true);
+    std::vector<llama_token> tokens((size_t) n_prompt);
+    if (llama_tokenize(e->vocab, prompt.c_str(), (int32_t) prompt.size(), tokens.data(), n_prompt, true, true) < 0) {
+        return -2;
+    }
+    const int n_ctx = (int) llama_n_ctx(e->ctx);
+    if (n_prompt >= n_ctx - 8) return -1;
+
+    // Feed the prompt in chunks no larger than n_batch.
+    const int chunk = 512;
+    for (int i = 0; i < n_prompt; i += chunk) {
+        int n = std::min(chunk, n_prompt - i);
+        llama_batch b = llama_batch_get_one(tokens.data() + i, n);
+        if (llama_decode(e->ctx, b) != 0) return -2;
+        if (e->stop) return 0;
+    }
+
+    llama_sampler_chain_params sp = llama_sampler_chain_default_params();
+    llama_sampler * smpl = llama_sampler_chain_init(sp);
+    if (temperature <= 0.0f) {
+        llama_sampler_chain_add(smpl, llama_sampler_init_greedy());
+    } else {
+        llama_sampler_chain_add(smpl, llama_sampler_init_top_k(40));
+        llama_sampler_chain_add(smpl, llama_sampler_init_top_p(0.95f, 1));
+        llama_sampler_chain_add(smpl, llama_sampler_init_min_p(0.05f, 1));
+        llama_sampler_chain_add(smpl, llama_sampler_init_temp(temperature));
+        llama_sampler_chain_add(smpl, llama_sampler_init_dist(LLAMA_DEFAULT_SEED));
+    }
+
+    std::string pending;
+    int produced = 0;
+    int rc = 0;
+    int n_past = n_prompt;
+    while (produced < maxTokens && !e->stop) {
+        if (n_past >= n_ctx - 1) break;
+        llama_token tok = llama_sampler_sample(smpl, e->ctx, -1);
+        if (llama_vocab_is_eog(e->vocab, tok)) break;
+        pending += tokenToPiece(e->vocab, tok);
+        size_t tail = incompleteUtf8Tail(pending);
+        if (pending.size() > tail) {
+            std::string ready = pending.substr(0, pending.size() - tail);
+            pending.erase(0, pending.size() - tail);
+            jbyteArray arr = toBytes(env, ready);
+            jboolean keepGoing = env->CallBooleanMethod(callback, onToken, arr);
+            env->DeleteLocalRef(arr);
+            if (env->ExceptionCheck()) { env->ExceptionClear(); break; }
+            if (!keepGoing) break;
+        }
+        llama_batch b = llama_batch_get_one(&tok, 1);
+        if (llama_decode(e->ctx, b) != 0) { rc = -2; break; }
+        ++produced;
+        ++n_past;
+    }
+    llama_sampler_free(smpl);
+    return rc;
+}
+
+} // extern "C"
