@@ -270,7 +270,7 @@ def execute(a: Action, index) -> str:
 BLOCK_SIGNS = re.compile(
     r"access denied|you don't have permission to access|request blocked|403 forbidden|\b403\b.{0,40}forbidden|"
     r"are you a (?:robot|human)|verify you are (?:a )?human|unusual traffic|captcha|bot detection|"
-    r"pardon our interruption|press (?:&|and) hold|checking your browser|attention required|"
+    r"something went wrong|pardon our interruption|press (?:&|and) hold|checking your browser|attention required|"
     r"enable javascript and cookies|this site can.t be reached|err_name_not_resolved|err_connection|"
     r"dns_probe|page (?:not|cannot be) found|\b404\b.{0,40}not found|server not found", re.I)
 
