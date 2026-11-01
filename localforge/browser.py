@@ -40,6 +40,7 @@ EXTRACT_JS = r"""(q) => {
   const here = location.href.split('#')[0];
   const link = el => { const a = [...el.querySelectorAll('a[href]')].find(a => clean(a.innerText).length > 8 && a.href.startsWith('http') && a.href.split('#')[0] !== here);
     return a ? ' -> ' + a.href.slice(0, 160) : ''; };
+  const BUTTONISH = /^(buy|sell|select|add|add to (cart|basket|bag)|view|details|more|opens in a new (window|tab)|opens in a new window or tab|watch|compare|share|save)$/i;
   const words = clean(q).toLowerCase().split(' ').filter(Boolean);
   const score = el => words.length ? words.filter(w => el.innerText.toLowerCase().includes(w)).length : 0;
   const parts = [];
@@ -48,7 +49,7 @@ EXTRACT_JS = r"""(q) => {
     .sort((a, b) => score(b) - score(a) || b.rows.length - a.rows.length).slice(0, 3);
   tables.forEach((t, i) => {
     const rows = [...t.rows].filter(vis).slice(0, 60).map(r =>
-      [...r.cells].map(c => mark(c, clean(c.innerText))).filter(x => x).join(' | ') + link(r)).filter(x => x.replace(/[ |]/g, ''));
+      [...r.cells].map(c => mark(c, clean(c.innerText))).filter(x => x && !BUTTONISH.test(x)).join(' | ') + link(r)).filter(x => x.replace(/[ |]/g, ''));
     parts.push(`Table ${i + 1} (${t.rows.length} rows${t.rows.length > 60 ? ', first 60 shown' : ''}):\n` + rows.join('\n'));
   });
   // 2) Repeated items (cards, search results, product tiles)
@@ -76,7 +77,8 @@ EXTRACT_JS = r"""(q) => {
       while ((n = w.nextNode())) {
         const t = clean(n.textContent);
         if (!t || texts.includes(t) || !n.parentElement || !vis(n.parentElement)) continue;
-        if (t.length < 6 && texts.slice(-3).some(x => x.includes(t))) continue;   // "£ | 374 | . | 99" pieces of a price already shown
+        if (t.length < 6 && texts.slice(-3).some(x => x.includes(t))) continue;
+        if (BUTTONISH.test(t)) continue;   // "£ | 374 | . | 99" pieces of a price already shown
         texts.push(mark(n.parentElement, t));
       }
       return (i + 1) + '. ' + texts.join(' | ').slice(0, 300) + link(it);

@@ -783,7 +783,12 @@ class App:
         url = a.path.strip()
         if not url or url in seen:
             return a
-        matches = [u for u in seen if u.startswith(url) and len(u) - len(url) <= 12]
+        # Only finish a link that is visibly cut mid-word (…/toky); never extend a complete one like a site root.
+        path = re.sub(r"^https?://[^/]+", "", url)
+        if url.endswith("/") or not re.search(r"[A-Za-z0-9]$", url) or path.count("/") < 1 or len(path) < 3:
+            return a
+        matches = [u for u in seen if u.startswith(url) and len(u) - len(url) <= 12
+                   and re.fullmatch(r"[A-Za-z0-9_-]+/?", u[len(url):])]
         if len(matches) == 1:
             return tools.Action(a.kind, matches[0], a.content, a.extra)
         return a
@@ -796,13 +801,23 @@ class App:
         or gives links that never appeared in any page or result."""
         prose = tools.prose_of(reply["text"])
         links = set(re.findall(r"https?://[^\s)\]\"'<>|*]+", prose))
+        seen_text = " ".join(m["text"] + " " + (m.get("modelText") or "") for m in self.messages
+                             if m["role"] in ("tool", "run", "user")).replace("&amp;", "&")
         if links:
-            seen_text = " ".join(m["text"] + " " + (m.get("modelText") or "") for m in self.messages
-                                 if m["role"] in ("tool", "run", "user"))
-            made_up = [u for u in links if u.rstrip(".,;:") not in seen_text]
+            core = lambda u: re.sub(r"^https?://(www\.)?", "", u.replace("&amp;", "&")).split("?")[0].split("#")[0].rstrip("/.,;:").lower()
+            seen_cores = {core(u) for u in re.findall(r"https?://[^\s)\]\"'<>|*]+", seen_text)}
+            made_up = [u for u in links if core(u) not in seen_cores]
             if made_up:
                 self._msg("note", "⚠ These links didn't appear in any page LocalForge opened, so they may be made up: "
                                   + ", ".join(sorted(made_up)[:5]))
+        # Prices and percentages that appear in no page or code output.
+        nums = lambda t: {float(x.replace(",", "")) for x in re.findall(r"\d(?:[\d,]*\d)?(?:\.\d+)?", t)}
+        seen_nums = nums(seen_text)
+        odd = [m.group(0) for m in re.finditer(r"[£$€]\s?\d(?:[\d,]*\d)?(?:\.\d+)?|\b\d(?:[\d,]*\d)?(?:\.\d+)?\s?%", prose)
+               if not nums(m.group(0)) <= seen_nums]
+        if odd:
+            self._msg("note", "⚠ These numbers didn't appear in any page or code output, so they may be estimates "
+                              "or made up: " + ", ".join(dict.fromkeys(odd[:6])))
         if not self.CLAIMS.search(prose):
             return
         since = []
@@ -814,9 +829,9 @@ class App:
         ok_run = any(m["role"] == "run" and m["text"].startswith("✓") for m in since)
         ok_tool = any(m["role"] == "tool" and re.match(r"(Saved|Created|Typed and submitted|Did \d+ of|Browser page|Clicked|"
                                                         r"Data |Fetched|Script result|Pressed)", m["text"]) for m in since)
-        last = since[0] if since else None
-        failed_last = last is not None and (last["text"].startswith("✗") or "error" in last["text"][:200].lower())
-        if (not ok_run and not ok_tool) or failed_last:
+        runs = [m for m in since if m["role"] == "run"]
+        code_failed_last = bool(runs) and not runs[0]["text"].startswith("✓") and not ok_tool
+        if (not ok_run and not ok_tool) or code_failed_last:
             self._msg("note", "⚠ LocalForge couldn't confirm this: no successful run or saved file in this "
                               "request matches what the answer says. Check the result before relying on it.")
 
