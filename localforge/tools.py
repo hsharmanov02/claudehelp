@@ -153,6 +153,7 @@ Rules:
 - Your answer must match the run/browser output exactly. Copy numbers and rows from it; never invent results.
   If the output doesn't show what was asked, say so and fix it instead of claiming success.
 - Do any sum, average or percentage in code, never in your head.
+- If a check returns 0, empty, or an error, your code is broken: fix it and test again before reporting.
 - Before your final answer, check the output against EVERY part of the question. If a part is missing or wrong, fix it.
   Never claim something worked or was saved unless the output shows it.
 - Include rows with no matches when asked (LEFT JOIN + COALESCE), and check totals add up.
