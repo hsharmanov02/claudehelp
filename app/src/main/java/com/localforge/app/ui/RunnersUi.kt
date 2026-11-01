@@ -29,6 +29,10 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -59,13 +63,28 @@ fun CodeRunnersCard(vm: AppViewModel) {
             Text("Code runners", color = C.Text, fontWeight = FontWeight.Bold, fontSize = 20.sp)
         }
         Spacer(Modifier.height(6.dp))
-        Text("Built in: Python · JavaScript · HTML · SQL · Shell", color = C.Good, fontSize = 14.sp)
         Text(
-            if (ready) "Termux: C · C++ · Java · Kotlin · Go · Rust · Ruby · PHP · Lua · Perl · Node · TypeScript"
-            else "Add C, C++, Java, Kotlin, Go, Rust, Ruby, PHP, Lua, Perl and Node with free Termux (one-time setup):",
-            color = if (ready) C.Good else C.Muted, fontSize = 14.sp
+            "Ready now, no setup: Python · JavaScript · TypeScript · HTML · SQL · Shell · Lua · Ruby · PHP · C · C++",
+            color = C.Good, fontSize = 14.sp
         )
-        Spacer(Modifier.height(10.dp))
+        Text(
+            if (ready) "Termux connected: Java · Kotlin · Go · Rust · Perl, plus full compilers for C, C++, PHP, Ruby and Node"
+            else "PHP, C and C++ run in simple built-in interpreters. Optional: connect Termux for Java, Kotlin, Go, Rust and full C/C++ compilers.",
+            color = if (ready) C.Good else C.Muted, fontSize = 13.sp
+        )
+        var showSetup by remember { mutableStateOf(false) }
+        if (!ready) {
+            TextButton(onClick = { showSetup = !showSetup }) { Text(if (showSetup) "Hide Termux setup" else "Show optional Termux setup") }
+        }
+        if (ready || !showSetup) {
+            vm.runnerMessage?.let {
+                Spacer(Modifier.height(6.dp))
+                Text(it, color = C.Text, fontFamily = FontFamily.Monospace, fontSize = 12.sp)
+            }
+            if (ready) OutlinedButton(onClick = { vm.testTermux() }) { Text("Test Termux") }
+            return@Panel
+        }
+        Spacer(Modifier.height(6.dp))
 
         Step(1, "Install Termux (from GitHub or F-Droid, not the Play Store)", vm.termuxInstalled) {
             ctx.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/termux/termux-app/releases/latest")))

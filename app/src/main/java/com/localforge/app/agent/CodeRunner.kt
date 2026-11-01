@@ -39,7 +39,11 @@ object CodeRunner {
     private const val MAX_OUTPUT = 6000
     private val dispatcher = Executors.newSingleThreadExecutor().asCoroutineDispatcher()
 
-    val builtIn = listOf("python", "javascript", "html", "sql", "shell")
+    /** Languages that work with no setup at all. */
+    val builtIn = listOf("python", "javascript", "typescript", "html", "sql", "shell", "lua", "ruby", "php", "c", "cpp")
+
+    /** Languages that only work once Termux is set up. */
+    val termuxOnly = setOf("java", "kotlin", "go", "rust", "perl", "node", "bash")
 
     private val termuxLangs = mapOf(
         "c" to TermuxLang("main.c", "clang main.c -o main -lm && ./main", "clang"),
@@ -71,9 +75,12 @@ object CodeRunner {
                     f.writeText(code)
                     RunResult("html", true, false, "Saved ${f.absolutePath}", previewFile = f)
                 }
-                "javascript" ->
-                    if (TermuxBridge.isReady(context)) runTermux(context, "node", code, workDir)
-                    else JsRunner.run(context, code, TIMEOUT_SEC * 1000L)
+                "typescript" -> JsRunner.run(context, lang, code, TIMEOUT_SEC * 1000L)
+                // Real compilers/interpreters when Termux is set up; built-in engines otherwise.
+                "javascript", "lua", "ruby", "php", "c", "cpp" ->
+                    if (TermuxBridge.isReady(context) && workDir.absolutePath.startsWith("/storage/")) {
+                        runTermux(context, if (lang == "javascript") "node" else lang, code, workDir)
+                    } else JsRunner.run(context, lang, code, TIMEOUT_SEC * 1000L)
                 else -> runTermux(context, lang, code, workDir)
             }
         } catch (e: Throwable) {
@@ -96,7 +103,7 @@ object CodeRunner {
             "$lang can't run on this phone. Supported: ${(builtIn + termuxLangs.keys).joinToString()}."
         )
         if (!TermuxBridge.isInstalled(context)) {
-            return RunResult(lang, false, false, "$lang needs Termux, which isn't installed. Set it up on the Home tab → Code runners.")
+            return RunResult(lang, false, false, "$lang can't run on this phone without Termux (not installed). Rewrite it in a supported language such as python, javascript, c or ruby — or the user can set up Termux on the Home tab.")
         }
         if (!TermuxBridge.hasPermission(context)) {
             return RunResult(lang, false, false, "LocalForge isn't allowed to use Termux yet. Tap \"Allow\" on the Home tab → Code runners.")

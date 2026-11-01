@@ -8,6 +8,13 @@
         android:name="android.permission.MANAGE_EXTERNAL_STORAGE"
         tools:ignore="ScopedStorage" />
 
+    <!-- Keep working (thinking, running code, downloading) when you switch apps -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+
     <!-- Lets LocalForge send code to Termux to compile and run (C, C++, Java, Go, Rust, ...) -->
     <uses-permission android:name="com.termux.permission.RUN_COMMAND" />
 
@@ -16,6 +23,7 @@
     </queries>
 
     <application
+        android:name=".LocalForgeApp"
         android:allowBackup="false"
         android:icon="@drawable/ic_launcher"
         android:roundIcon="@drawable/ic_launcher"
@@ -23,8 +31,18 @@
         android:largeHeap="true"
         android:extractNativeLibs="true"
         android:theme="@style/Theme.LocalForge">
+        <service
+            android:name=".WorkService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Runs an on-device AI model and the code it writes while the user switches apps" />
+        </service>
+
         <activity
             android:name=".MainActivity"
+            android:launchMode="singleTop"
             android:exported="true"
             android:windowSoftInputMode="adjustResize">
             <intent-filter>

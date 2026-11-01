@@ -4,7 +4,11 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
-import androidx.activity.viewModels
+import androidx.activity.result.contract.ActivityResultContracts
+import android.Manifest
+import android.content.pm.PackageManager
+import android.os.Build
+import androidx.core.content.ContextCompat
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -47,16 +51,36 @@ import com.localforge.app.ui.LocalForgeTheme
 import com.localforge.app.ui.ModelsScreen
 
 class MainActivity : ComponentActivity() {
-    private val vm: AppViewModel by viewModels()
+    private val app get() = application as LocalForgeApp
+    private val vm: AppViewModel get() = app.state
+
+    private val askNotifications = registerForActivityResult(ActivityResultContracts.RequestPermission()) { }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        // Needed to show "working in background" / "reply ready" notifications on Android 13+.
+        if (Build.VERSION.SDK_INT >= 33 &&
+            ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+        ) {
+            askNotifications.launch(Manifest.permission.POST_NOTIFICATIONS)
+        }
         setContent {
             LocalForgeTheme {
                 App(vm)
             }
         }
+    }
+
+    override fun onStart() {
+        super.onStart()
+        app.visible = true
+    }
+
+    override fun onStop() {
+        app.visible = false
+        vm.saveChat()
+        super.onStop()
     }
 
     override fun onResume() {

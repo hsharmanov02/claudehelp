@@ -10,6 +10,10 @@ import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
+import kotlinx.coroutines.flow.distinctUntilChanged
+import org.json.JSONArray
+import org.json.JSONObject
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.localforge.app.agent.CodeRunner
@@ -237,28 +241,33 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     fun loadModel(m: LocalModel) {
         if (loading) return
-        viewModelScope.launch {
-            loading = true
-            engineMessage = "Loading ${m.name}…"
-            var err: String? = null
-            val ok = try {
-                Engine.load(m.file.absolutePath, nCtx, threads, getApplication<Application>().applicationInfo.nativeLibraryDir)
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Throwable) {
-                err = e.message
-                false
-            }
+        viewModelScope.launch { loadModelNow(m) }
+    }
+
+    /** Loads a model and waits until it's ready. Returns true on success. */
+    private suspend fun loadModelNow(m: LocalModel): Boolean {
+        loading = true
+        engineMessage = "Loading ${m.name}…"
+        var err: String? = null
+        val ok = try {
+            Engine.load(m.file.absolutePath, nCtx, threads, getApplication<Application>().applicationInfo.nativeLibraryDir)
+        } catch (e: CancellationException) {
             loading = false
-            if (ok) {
-                loadedModel = m.name
-                engineMessage = "${m.name} is ready"
-                prefs.edit().putString("lastModel", m.name).apply()
-            } else {
-                loadedModel = null
-                engineMessage = err ?: "Couldn't load ${m.name}. It may be too big for this phone's memory or not a valid GGUF."
-            }
+            throw e
+        } catch (e: Throwable) {
+            err = e.message
+            false
         }
+        loading = false
+        if (ok) {
+            loadedModel = m.name
+            engineMessage = "${m.name} is ready"
+            prefs.edit().putString("lastModel", m.name).apply()
+        } else {
+            loadedModel = null
+            engineMessage = err ?: "Couldn't load ${m.name}. It may be too big for this phone's memory or not a valid GGUF."
+        }
+        return ok
     }
 
     fun unloadModel() {
@@ -290,6 +299,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun clearChat() {
         if (generating) return
         messages.clear()
+        try { chatFile.delete() } catch (_: Exception) {}
     }
 
     @Volatile private var stopRequested = false
@@ -301,9 +311,18 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     fun send() {
         val text = input.trim()
-        if (text.isEmpty() || generating) return
+        if (text.isEmpty() || generating || loading) return
         if (!Engine.isLoaded) {
-            messages += UiMessage(Role.NOTE, "Load a model on the Home tab first.")
+            // The model is unloaded if Android restarted the app; reload the last one automatically.
+            val last = localModels.firstOrNull { it.name == lastModelName } ?: localModels.singleOrNull()
+            if (last == null) {
+                messages += UiMessage(Role.NOTE, "Load a model on the Home tab first.")
+                return
+            }
+            viewModelScope.launch {
+                messages += UiMessage(Role.NOTE, "Loading ${last.name.removeSuffix(".gguf")}…")
+                if (loadModelNow(last)) send() else messages += UiMessage(Role.NOTE, engineMessage ?: "Couldn't load the model.")
+            }
             return
         }
         val att = attachment
@@ -349,11 +368,17 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         termuxAllowed = TermuxBridge.hasPermission(ctx)
     }
 
-    fun availableLanguages(): List<String> =
-        if (termuxInstalled && termuxAllowed && hasFileAccess) {
-            listOf("python", "javascript (node)", "typescript", "html", "sql", "shell", "bash") +
-                (CodeRunner.termuxLanguages - setOf("node", "typescript", "bash")).sorted()
-        } else CodeRunner.builtIn
+    fun availableLanguages(): List<String> {
+        val termux = termuxInstalled && termuxAllowed && hasFileAccess
+        return if (termux) {
+            listOf("python", "javascript", "typescript", "html", "sql", "shell", "c", "cpp", "java", "kotlin", "go", "rust", "ruby", "php", "lua", "perl", "bash")
+        } else {
+            listOf(
+                "python", "javascript", "typescript", "html", "sql", "shell", "lua", "ruby",
+                "php (basic: no printf)", "c / cpp (simple interpreter: use arrays, printf and cout only — no vector, map or std::string)"
+            )
+        }
+    }
 
     /** Quick check that Termux answers and which compilers are installed. */
     fun testTermux() {
@@ -399,7 +424,12 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     private suspend fun executeRun(run: FileAction.Run, p: PendingAction?): Boolean {
         val out = UiMessage(Role.RUN, "Running ${run.path}…")
         messages += out
-        val r = CodeRunner.run(getApplication<Application>(), run.path, run.code, runDir())
+        runningCode = true
+        val r = try {
+            CodeRunner.run(getApplication<Application>(), run.path, run.code, runDir())
+        } finally {
+            runningCode = false
+        }
         out.text = (if (r.ok) "✓ " else if (r.timedOut) "⏱ " else "✗ ") + "${r.lang}\n${r.output}"
         out.modelTextOverride = r.forModel()
         r.previewFile?.let { htmlPreview = it }
@@ -476,6 +506,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 messages += UiMessage(Role.NOTE, e.message ?: "Something went wrong")
             } finally {
                 generating = false
+                saveChat()
+                val app = getApplication<LocalForgeApp>()
+                if (!app.visible) WorkService.notifyDone(app, "Your reply is ready — tap to view")
             }
         }
     }
@@ -605,11 +638,69 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         editorText = ""
     }
 
+    // ---- Background work + saved chat ----
+    var runningCode by mutableStateOf(false)
+        private set
+    private val chatFile get() = File(getApplication<Application>().filesDir, "chat.json")
+
+    /** Saves the conversation so it survives the app being closed or restarted. */
+    fun saveChat() {
+        val arr = JSONArray()
+        for (m in messages) {
+            if (m.role == Role.ASSISTANT && m.text.isBlank()) continue
+            arr.put(JSONObject().apply {
+                put("role", m.role.name)
+                put("text", m.text)
+                m.modelText?.let { put("model", it) }
+                m.stats?.let { put("stats", it) }
+            })
+        }
+        try { chatFile.writeText(arr.toString()) } catch (_: Exception) {}
+    }
+
+    private fun loadChat() {
+        try {
+            if (!chatFile.exists()) return
+            val arr = JSONArray(chatFile.readText())
+            for (i in 0 until arr.length()) {
+                val o = arr.getJSONObject(i)
+                val role = runCatching { Role.valueOf(o.getString("role")) }.getOrNull() ?: continue
+                val m = UiMessage(role, o.getString("text"), if (o.has("model")) o.getString("model") else null)
+                if (o.has("stats")) m.stats = o.getString("stats")
+                messages += m
+            }
+        } catch (_: Exception) {}
+    }
+
+    private fun watchBackgroundWork() {
+        viewModelScope.launch {
+            snapshotFlow {
+                val dl = downloads.values.filter { it.error == null }
+                when {
+                    generating -> "Thinking…"
+                    runningCode -> "Running code…"
+                    loading -> "Loading model…"
+                    dl.isNotEmpty() -> {
+                        val d = dl.first()
+                        val pct = if (d.total > 0) (d.done * 100 / d.total).toInt() else 0
+                        "Downloading ${d.file.fileName} · $pct%"
+                    }
+                    else -> null
+                }
+            }.distinctUntilChanged().collect { status ->
+                val app = getApplication<Application>()
+                if (status != null) WorkService.start(app, status) else WorkService.stop(app)
+            }
+        }
+    }
+
     init {
         refreshPermission()
         refreshModels()
         device = store.deviceInfo()
         refreshTermux()
+        loadChat()
+        watchBackgroundWork()
     }
 
     /** Heuristic: real replies are mostly letters and spaces; broken models emit digits and symbols. */
