@@ -28,8 +28,8 @@ data class DeviceInfo(
     val availRam: Long,
     val freeStorage: Long
 ) {
-    /** Largest model file this phone can realistically load and still run the OS. */
-    val modelBudget: Long get() = (totalRam * 0.5).toLong()
+    /** Largest model file that still runs at a usable speed and leaves the phone room to breathe. */
+    val modelBudget: Long get() = minOf((totalRam * 0.3).toLong(), 2_600L * 1024 * 1024)
 }
 
 /** Only uncensored / abliterated models are allowed in LocalForge. */

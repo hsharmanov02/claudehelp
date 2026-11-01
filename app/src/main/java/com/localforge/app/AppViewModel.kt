@@ -50,6 +50,7 @@ class DownloadProgress(val file: HfFile) {
 
 class UiMessage(val role: Role, initial: String, val modelText: String? = null) {
     var text by mutableStateOf(initial)
+    var stats by mutableStateOf<String?>(null)
     val actions = mutableStateListOf<PendingAction>()
 }
 
@@ -63,9 +64,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         private set
 
     // ---- Settings ----
-    var nCtx by mutableStateOf(prefs.getInt("nCtx", 4096))
+    var nCtx by mutableStateOf(prefs.getInt("nCtx", 2048))
         private set
-    var threads by mutableStateOf(prefs.getInt("threads", defaultThreads()))
+    var threads by mutableStateOf(prefs.getInt("threads2", defaultThreads()))
         private set
     var temperature by mutableStateOf(prefs.getFloat("temp", 0.3f))
         private set
@@ -77,13 +78,14 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         private set
 
     fun updateCtx(v: Int) { nCtx = v; prefs.edit().putInt("nCtx", v).apply() }
-    fun updateThreads(v: Int) { threads = v; prefs.edit().putInt("threads", v).apply() }
+    fun updateThreads(v: Int) { threads = v; prefs.edit().putInt("threads2", v).apply() }
     fun updateTemperature(v: Float) { temperature = v; prefs.edit().putFloat("temp", v).apply() }
     fun updateMaxTokens(v: Int) { maxTokens = v; prefs.edit().putInt("maxTokens", v).apply() }
     fun updateAutoApprove(v: Boolean) { autoApprove = v; prefs.edit().putBoolean("autoApprove", v).apply() }
     fun updateHfToken(v: String) { hfToken = v.trim(); prefs.edit().putString("hfToken", hfToken).apply() }
 
-    private fun defaultThreads(): Int = (Runtime.getRuntime().availableProcessors() - 2).coerceIn(2, 6)
+    // Phones have 4 fast cores at most; using the slow ones too makes generation slower, not faster.
+    private fun defaultThreads(): Int = Runtime.getRuntime().availableProcessors().coerceAtMost(4).coerceAtLeast(2)
 
     // ---- Models ----
     val localModels = mutableStateListOf<LocalModel>()
@@ -233,9 +235,13 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             loading = true
             engineMessage = "Loading ${m.name}…"
+            var err: String? = null
             val ok = try {
-                Engine.load(m.file.absolutePath, nCtx, threads)
+                Engine.load(m.file.absolutePath, nCtx, threads, getApplication<Application>().applicationInfo.nativeLibraryDir)
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Throwable) {
+                err = e.message
                 false
             }
             loading = false
@@ -245,7 +251,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 prefs.edit().putString("lastModel", m.name).apply()
             } else {
                 loadedModel = null
-                engineMessage = "Couldn't load ${m.name}. It may be too big for this phone's memory or not a valid GGUF."
+                engineMessage = err ?: "Couldn't load ${m.name}. It may be too big for this phone's memory or not a valid GGUF."
             }
         }
     }
@@ -350,6 +356,15 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                     }
                     reply.text = full.trim()
                     if (reply.text.isEmpty()) reply.text = "(no reply)"
+                    reply.stats = "%.1f tokens/sec".format(Engine.lastTokensPerSecond)
+                    if (looksBroken(reply.text)) {
+                        messages += UiMessage(
+                            Role.NOTE,
+                            "This reply looks like gibberish. That usually means the model file is too heavily compressed " +
+                                "(Q2/Q3) or broken. Download a Q4_K_M or Q4_0 version from the Models tab."
+                        )
+                        break
+                    }
                     if (stopRequested) {
                         messages += UiMessage(Role.NOTE, "Stopped.")
                         break
@@ -486,5 +501,14 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         refreshPermission()
         refreshModels()
         device = store.deviceInfo()
+    }
+
+    /** Heuristic: real replies are mostly letters and spaces; broken models emit digits and symbols. */
+    private fun looksBroken(text: String): Boolean {
+        if (text.length < 40) return false
+        val prose = text.replace(Regex("```[\\s\\S]*?(```|$)"), "")
+        if (prose.length < 40) return false
+        val letters = prose.count { it.isLetter() || it == ' ' }
+        return letters.toDouble() / prose.length < 0.55
     }
 }

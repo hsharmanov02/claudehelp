@@ -235,6 +235,7 @@ private fun MessageView(vm: AppViewModel, m: UiMessage, onSave: (Segment.Code) -
                 }
             }
             m.actions.forEach { ActionCard(vm, it) }
+            m.stats?.let { Text(it, color = C.Muted, fontSize = 11.sp, modifier = Modifier.padding(top = 2.dp)) }
         }
         Role.TOOL -> {
             var open by remember { mutableStateOf(false) }

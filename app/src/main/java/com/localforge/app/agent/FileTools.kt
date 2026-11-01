@@ -39,7 +39,8 @@ object FileTools {
 
     fun systemPrompt(workspace: String): String = """
 You are LocalForge, an expert coding assistant running fully offline on the user's Android phone.
-You write clear, correct code and explain briefly. Put code in ``` blocks.
+Always reply in English. Write clear, correct code and explain it briefly in plain English.
+Put code in ``` blocks.
 
 You can work with the user's files by writing these tags in your reply, each on its own line:
 <list path="/full/path/to/folder"/>      show what is in a folder

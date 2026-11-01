@@ -14,8 +14,8 @@ android {
         applicationId = "com.localforge.app"
         minSdk = 30
         targetSdk = 36
-        versionCode = 1
-        versionName = "1.0"
+        versionCode = 3
+        versionName = "1.2"
 
         ndk {
             abiFilters += listOf("arm64-v8a")
@@ -62,7 +62,8 @@ android {
     }
 
     packaging {
-        jniLibs.useLegacyPackaging = false
+        // CPU backend variants are loaded from disk at runtime, so native libs must be extracted
+        jniLibs.useLegacyPackaging = true
     }
 }
 

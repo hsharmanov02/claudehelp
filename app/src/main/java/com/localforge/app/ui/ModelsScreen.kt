@@ -58,6 +58,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.localforge.app.AppViewModel
 import com.localforge.app.data.HfFile
+import com.localforge.app.data.HuggingFace
 import com.localforge.app.data.LocalModel
 import com.localforge.app.data.formatBytes
 
@@ -192,6 +193,18 @@ fun ModelsScreen(vm: AppViewModel) {
                         Text(formatBytes(f.size), color = if (tooBig) C.Bad else C.Text, fontWeight = FontWeight.SemiBold)
                         if (tooBig) Text("  too big for this phone", color = C.Bad, fontSize = 12.sp)
                     }
+                    val speed = HuggingFace.estTokensPerSec(f.size).toInt()
+                    val lowQuant = f.quant.startsWith("Q2") || f.quant.startsWith("Q3") || f.quant.startsWith("IQ1") ||
+                        f.quant.startsWith("IQ2") || f.quant.startsWith("IQ3")
+                    Text(
+                        "~$speed tokens/sec" + when {
+                            lowQuant -> " · low quality, small models often output gibberish"
+                            speed < 5 -> " · slow on a phone"
+                            f.quant == "Q4_0" || f.quant == "IQ4_NL" -> " · fastest on phones"
+                            else -> ""
+                        },
+                        color = if (lowQuant || speed < 5) C.Gold else C.Muted, fontSize = 12.sp
+                    )
                     Text(f.fileName, color = C.Muted, fontSize = 12.sp, fontFamily = FontFamily.Monospace, maxLines = 2, overflow = TextOverflow.Ellipsis)
                     Spacer(Modifier.height(6.dp))
                     FileRow(vm, f)
@@ -248,7 +261,7 @@ private fun PhoneCard(vm: AppViewModel) {
                 "RAM ${formatBytes(d.totalRam)} (${formatBytes(d.availRam)} free) · ${d.cores} cores · ${formatBytes(d.freeStorage)} storage free",
                 color = C.Muted, fontSize = 13.sp
             )
-            Text("Max model size for this phone: ~${formatBytes(d.modelBudget)}", color = C.Text, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+            Text("Best size for speed on this phone: up to ~${formatBytes(d.modelBudget)} (1.5B–4B models at Q4)", color = C.Text, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
         }
         vm.scanSummary?.let {
             Spacer(Modifier.height(6.dp))

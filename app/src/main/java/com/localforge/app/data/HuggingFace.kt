@@ -83,51 +83,58 @@ object HuggingFace {
         result.sortedBy { it.size }
     }
 
-    // Best quality-per-byte first. Lower quants only when nothing better fits.
-    private val quantRank = listOf(
-        "Q4_K_M" to 1.0, "Q4_K_S" to 0.97, "IQ4_XS" to 0.96, "Q5_K_M" to 0.99, "Q5_K_S" to 0.98,
-        "Q4_0" to 0.93, "IQ4_NL" to 0.95, "Q3_K_L" to 0.82, "Q3_K_M" to 0.8, "IQ3_M" to 0.8,
-        "Q3_K_S" to 0.72, "IQ3_XS" to 0.72, "Q2_K" to 0.55
+    // Only good-quality 4/5-bit quants. Q4_0 and IQ4_NL get repacked into a faster layout on ARM chips.
+    private val quantRank = mapOf(
+        "Q4_0" to 1.0, "IQ4_NL" to 0.99, "Q4_K_M" to 0.97, "Q4_K_S" to 0.95, "IQ4_XS" to 0.94, "Q5_K_M" to 0.9
     )
+    private val trusted = listOf("bartowski", "mradermacher", "unsloth", "lmstudio-community", "quantfactory", "huihui-ai")
+    private val excluded = listOf("vision", "-vl", "mmproj", "embed", "reward", "draft", "audio", "tts", "rerank")
 
-    private fun paramsOf(name: String, fileSize: Long): Double {
-        val m = Regex("(?<![\\d.])(\\d+(?:\\.\\d+)?)\\s*[bB](?![a-zA-Z])").findAll(name).lastOrNull()
-        val p = m?.groupValues?.get(1)?.toDoubleOrNull()
-        if (p != null && p in 0.3..400.0) return p
-        return fileSize / 0.6e9 // rough: Q4 ≈ 0.6 GB per billion params
+    /** Billions of parameters from the repo name, or null if unclear. MoE names like 30B-A3B count the full size. */
+    fun paramsOf(name: String): Double? {
+        val all = Regex("(?<![\\d.A-Za-z])(\\d+(?:\\.\\d+)?)\\s*[bB](?![a-zA-Z])").findAll(name)
+            .mapNotNull { it.groupValues[1].toDoubleOrNull() }.filter { it in 0.1..1000.0 }.toList()
+        return all.maxOrNull()
     }
 
+    /** Rough generation speed on a recent phone: generation is limited by memory bandwidth (~15 GB/s usable). */
+    fun estTokensPerSec(fileSize: Long): Double = if (fileSize <= 0) 0.0 else 15e9 / fileSize
+
     /**
-     * Ranks uncensored models for this phone: biggest model that fits in memory at a good quant wins,
-     * popularity breaks ties. [coding] adds coder-focused searches.
+     * Realistic, fast picks for this phone: small uncensored models (≤4.5B) at good 4-bit quants that
+     * fit comfortably in memory and run at a usable speed. [coding] boosts coder models.
      */
     suspend fun recommend(device: DeviceInfo, token: String?, coding: Boolean): List<Recommendation> = coroutineScope {
-        val limit = minOf(device.modelBudget, device.freeStorage - 500L * 1024 * 1024)
-        val queries = mutableListOf("abliterated", "uncensored", "dolphin", "instruct abliterated")
-        if (coding) queries += listOf("coder abliterated", "coder uncensored", "qwen2.5 coder abliterated")
-        val repos = withContext(Dispatchers.IO) {
-            queries.flatMap { runCatching { rawSearch(it, token, 30) }.getOrDefault(emptyList()) }
-        }
-            .filter { Uncensored.matches(it.id) && !it.id.contains("vision", true) && !it.id.contains("-VL", true) }
+        val maxFile = minOf(device.modelBudget, device.freeStorage - 500L * 1024 * 1024)
+        val queries = listOf(
+            "1.5B abliterated", "3B abliterated", "4B abliterated", "2B abliterated", "1B abliterated",
+            "3B uncensored", "1B uncensored", "4B uncensored",
+            "llama 3.2 3b abliterated", "qwen2.5 3b abliterated", "qwen3 4b abliterated", "gemma 3 4b abliterated",
+            "qwen2.5 coder 3b abliterated", "qwen2.5 coder 1.5b abliterated", "dolphin 3b"
+        )
+        val repos = queries.map { q -> async(Dispatchers.IO) { runCatching { rawSearch(q, token, 25) }.getOrDefault(emptyList()) } }
+            .awaitAll().flatten()
+            .filter { r ->
+                val p = paramsOf(r.id)
+                Uncensored.matches(r.id) && p != null && p <= 4.5 && excluded.none { r.id.contains(it, true) } &&
+                    !Regex("A\\d+(\\.\\d+)?B", RegexOption.IGNORE_CASE).containsMatchIn(r.id)
+            }
             .distinctBy { it.id }
             .sortedByDescending { it.downloads }
-            .take(18)
+            .take(20)
 
         val picks = repos.map { repo ->
             async {
                 val files = runCatching { ggufFiles(repo.id, token) }.getOrDefault(emptyList())
-                val fitting = files.filter { it.size in 1..limit }
-                var best: Pair<HfFile, Double>? = null
-                for ((q, quality) in quantRank) {
-                    val f = fitting.firstOrNull { it.quant == q } ?: continue
-                    if (best == null || quality > best.second) best = f to quality
-                }
-                best?.let { (f, quality) ->
-                    val params = paramsOf(repo.id, f.size)
-                    val isCoder = repo.id.contains("coder", true) || repo.id.contains("code", true)
-                    val score = params * quality * (if (coding && isCoder) 1.25 else 1.0)
-                    Triple(score, repo, Recommendation(f, repo.downloads, params, buildReason(params, f, device, isCoder && coding)))
-                }
+                val params = paramsOf(repo.id) ?: return@async null
+                val best = files.filter { it.size in 1..maxFile && it.quant in quantRank }
+                    .maxByOrNull { quantRank.getValue(it.quant) } ?: return@async null
+                val speed = estTokensPerSec(best.size)
+                val isCoder = repo.id.contains("coder", true)
+                val speedFactor = if (speed >= 8) 1.0 else speed / 8
+                val trust = if (trusted.any { repo.id.startsWith(it, true) }) 1.1 else 1.0
+                val score = params * quantRank.getValue(best.quant) * speedFactor * trust * (if (coding && isCoder) 1.15 else 1.0)
+                Triple(score, repo, Recommendation(best, repo.downloads, params, buildReason(params, best, speed, isCoder)))
             }
         }.awaitAll().filterNotNull()
 
@@ -137,10 +144,10 @@ object HuggingFace {
             .take(6)
     }
 
-    private fun buildReason(params: Double, f: HfFile, d: DeviceInfo, coder: Boolean): String {
-        val pct = (f.size * 100 / d.totalRam.coerceAtLeast(1)).toInt()
+    private fun buildReason(params: Double, f: HfFile, speed: Double, coder: Boolean): String {
         val p = if (params >= 10) "%.0f".format(params) else "%.1f".format(params)
-        return "~${p}B params · ${f.quant} · uses ~$pct% of your RAM" + if (coder) " · coding model" else ""
+        val tier = if (speed >= 12) "Fast" else "Balanced"
+        return "$tier · ${p}B · ${f.quant} · ~${speed.toInt()} tokens/sec on your phone" + if (coder) " · coding model" else ""
     }
 
     fun downloadUrl(file: HfFile): String =

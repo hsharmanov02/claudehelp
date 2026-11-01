@@ -13,10 +13,18 @@ interface TokenCallback {
 object LlamaEngine {
     init {
         System.loadLibrary("localforge")
-        nativeInit()
     }
 
-    @JvmStatic external fun nativeInit()
+    @Volatile private var devices = -1
+
+    /** Loads the CPU backend best suited to this phone's chip. Safe to call repeatedly. */
+    @Synchronized
+    fun ensureInit(nativeLibDir: String): Int {
+        if (devices < 0) devices = nativeInit(nativeLibDir)
+        return devices
+    }
+
+    @JvmStatic external fun nativeInit(nativeLibDir: String): Int
     @JvmStatic external fun nativeLoad(path: String, nCtx: Int, nThreads: Int): Long
     @JvmStatic external fun nativeFree(handle: Long)
     @JvmStatic external fun nativeStop(handle: Long)
@@ -38,7 +46,14 @@ object Engine {
 
     val isLoaded: Boolean get() = handle != 0L
 
-    suspend fun load(path: String, nCtx: Int, threads: Int): Boolean = withContext(dispatcher) {
+    /** Speed of the last reply in tokens per second (approximate). */
+    @Volatile var lastTokensPerSecond: Double = 0.0
+        private set
+
+    suspend fun load(path: String, nCtx: Int, threads: Int, nativeLibDir: String): Boolean = withContext(dispatcher) {
+        if (LlamaEngine.ensureInit(nativeLibDir) <= 0) {
+            throw IllegalStateException("No CPU backend could be loaded on this phone.")
+        }
         if (handle != 0L) {
             LlamaEngine.nativeFree(handle)
             handle = 0L
@@ -85,14 +100,20 @@ object Engine {
         ) ?: throw IllegalStateException("This model's chat format isn't supported.")
         val prompt = String(formatted, Charsets.UTF_8)
         val out = StringBuilder()
+        var pieces = 0
+        var firstAt = 0L
         val rc = LlamaEngine.nativeGenerate(h, prompt, maxTokens, temperature, object : TokenCallback {
             override fun onToken(bytes: ByteArray): Boolean {
+                if (pieces == 0) firstAt = System.nanoTime()
+                pieces++
                 val piece = String(bytes, Charsets.UTF_8)
                 out.append(piece)
                 onText(piece)
                 return true
             }
         })
+        val secs = (System.nanoTime() - firstAt) / 1e9
+        lastTokensPerSecond = if (pieces > 1 && secs > 0) (pieces - 1) / secs else 0.0
         when (rc) {
             -1 -> throw IllegalStateException("The conversation is too long for the context size. Clear the chat or raise context in settings.")
             -2 -> throw IllegalStateException("The model failed while generating (out of memory?). Try a smaller model or context.")
