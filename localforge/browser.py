@@ -605,6 +605,7 @@ class Browser:
 
     def describe(self, max_text=4500, console=True) -> str:
         d = self.snapshot(max_text)
+        self._last_read = "describe"
         els = "\n".join(e[:110] for e in d["elements"][:70])
         problems = self.console_text(only_problems=True, limit=15) if console else ""
         cues = "\n".join(d.get("cues") or [])
@@ -664,7 +665,25 @@ class Browser:
         """Pulls tables and repeated lists (search results, products, stories) off the page as rows."""
         self.ensure()
         out = self.eval(f"({EXTRACT_JS})({json.dumps(query)})", 20) or ""
+        # Remember each numbered list row's link: models often write <click n="3"/> meaning "row 3".
+        self._extract_rows = {int(m.group(1)): m.group(2) for m in re.finditer(r"^(\d+)\. .*? -> (https?://\S+)$", out, re.M)}
+        self._extract_url = self.url
+        self._last_read = "extract"
         return out or "No tables or repeated lists found on this page. Read it with <page/> or use <js>."
+
+    def extract_link(self, n: int):
+        """Row n's link from the last extract on this page, but only when page element n doesn't exist."""
+        rows = getattr(self, "_extract_rows", {})
+        if n not in rows or getattr(self, "_extract_url", None) != self.url:
+            return None
+        if getattr(self, "_last_read", "") == "extract":
+            return rows[n]          # the model's latest view of this page was the extracted rows
+        try:
+            if self.eval(f"!!document.querySelector('[data-lf-id=\"{int(n)}\"]')"):
+                return None
+        except Exception:
+            pass
+        return rows[n]
 
     def run_js(self, code: str) -> str:
         self.ensure()

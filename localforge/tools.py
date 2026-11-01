@@ -62,6 +62,7 @@ WRITE = re.compile(r'<write\s+path\s*=\s*"([^"]+)"\s*>\r?\n?([\s\S]*?)</write>',
 RUN = re.compile(r'<run(?:\s+lang(?:uage)?\s*=\s*"([^"]*)")?\s*>\r?\n?([\s\S]*?)(</run>|$)', re.I)
 B_SEARCH = re.compile(r'<search\s+(?:query|q)\s*=\s*"([^"]+)"\s*/?>', re.I)
 B_BROWSE = re.compile(r'<(?:browse|goto|navigate)\s+(?:url|href)\s*=\s*"([^"]+)"\s*/?>', re.I)
+B_OPEN_URL = re.compile(r'<open\s+(?:url|href)\s*=\s*"([^"]+)"\s*/?>', re.I)
 B_FETCH = re.compile(r'<fetch\s+(?:url|href)\s*=\s*"([^"]+)"\s*/?>', re.I)
 B_PAGE = re.compile(r'<page\s*/?>', re.I)
 B_EXTRACT = re.compile(r'<extract(?:\s+(?:query|q|what|about)\s*=\s*"([^"]*)")?\s*/?>', re.I)
@@ -203,6 +204,8 @@ def parse(raw: str) -> list[Action]:
     for m in B_SEARCH.finditer(reply):
         found.append((m.start(), Action("search", m.group(1).strip())))
     for m in B_BROWSE.finditer(reply):
+        found.append((m.start(), Action("browse", m.group(1).strip())))
+    for m in B_OPEN_URL.finditer(reply):
         found.append((m.start(), Action("browse", m.group(1).strip())))
     for m in B_FETCH.finditer(reply):
         found.append((m.start(), Action("fetch", m.group(1).strip())))
@@ -376,7 +379,8 @@ def execute_browser(a: Action, browser) -> str:
             r = browser.describe()
             return r + blocked_hint(r)
         if a.kind == "extract":
-            return "Data on the page (tables and repeated lists; ▲/▼ = shown as up/down by colour or icon):\n" + browser.extract(a.path)
+            return ("Data on the page (tables and repeated lists; ▲/▼ = shown as up/down by colour or icon). "
+                    "To open a row, use <browse url=\"its link\"/>:\n" + browser.extract(a.path))
         if a.kind == "page":
             r = browser.describe()
             return r + blocked_hint(r)
@@ -394,6 +398,11 @@ def execute_browser(a: Action, browser) -> str:
                 " if (r && r.bottom > 0 && r.top < innerHeight && n.textContent.trim()) t.push(n.textContent.trim()); }"
                 " return t.join(' ').slice(0, 5000); })()")
         if a.kind == "click":
+            link = browser.extract_link(int(a.path))
+            if link:     # the model meant row N of the last <extract>, not page element N
+                browser.navigate(link)
+                r = f"Opened row {a.path} of the extracted data ({link}). Now:\n" + browser.describe(4000)
+                return r + blocked_hint(r)
             browser.click_element(int(a.path))
             r = "Clicked. Now:\n" + browser.describe(4000)
             return r + blocked_hint(r)

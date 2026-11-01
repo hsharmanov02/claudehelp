@@ -234,6 +234,14 @@ function renderModels() {
 }
 
 // ---------- CHAT ----------
+// Tool tags shown as friendly step chips instead of raw <tags>.
+function stepLabel(k, attrs) {
+  const v = ((attrs.match(/=\s*&quot;([\s\S]*?)&quot;/) || [])[1] || "").slice(0, 80);
+  return ({ search: "🔎 Search: " + v, browse: "🌐 Open " + v, goto: "🌐 Open " + v, navigate: "🌐 Open " + v, fetch: "⬇ Fetch " + v,
+    page: "📄 Read the page", extract: "📊 Extract data" + (v ? ": " + v : ""), click: "🖱 Click [" + v + "]", press: "⌨ Press " + v,
+    scroll: "↕ Scroll " + (v || "down"), find: "🔍 Find files: " + v, list: "📁 List " + v, read: "📄 Read " + v,
+    mkdir: "📁 New folder " + v, delete: "🗑 Delete " + v, open: "↗ Open " + v })[k] || k;
+}
 function md(src) {
   // Minimal, safe markdown: code fences, inline code, bold/italic, headings, lists, links.
   const out = [];
@@ -249,7 +257,7 @@ function md(src) {
     }
     let h = esc(part)
       .replace(/&lt;(write|run|type|js)[\s\S]*?(&lt;\/\1&gt;|$)/g, "")       // tool tags are shown as cards instead
-      .replace(/&lt;(find|list|read|mkdir|delete|open|search|browse|page|extract|click|press|scroll)(\s[^&]*?)?\/?&gt;/g, m => `<span class="pill">${m}</span>`)
+      .replace(/&lt;(find|list|read|mkdir|delete|open|search|browse|goto|navigate|fetch|page|extract|click|press|scroll)(\s[^&]*?)?\/?&gt;/g, (m, k, attrs) => `<span class="pill step">${stepLabel(k, attrs || "")}</span>`)
       .replace(/`([^`\n]+)`/g, "<code>$1</code>")
       .replace(/\*\*([^*\n]+)\*\*/g, "<b>$1</b>")
       .replace(/(^|[^*])\*([^*\n]+)\*/g, "$1<i>$2</i>")
@@ -553,7 +561,7 @@ function dockChat(on) {
   const target = on ? $("#br-side") : $("#tab-chat");
   ["#chat-head", "#messages", "#composer"].forEach(sel => target.appendChild($(sel)));
   $("#tab-browser").classList.toggle("side-open", on);
-  brSize = ""; setTimeout(fitBrowser, 60);
+  brSize = ""; fitBrowser(); requestAnimationFrame(fitBrowser); setTimeout(fitBrowser, 250);
   lastMsgVersion = -1; syncMessages().then(() => { const m = $("#messages"); m.scrollTop = m.scrollHeight; });
 }
 try { const w = localStorage.getItem("lf-side-w"); if (w) document.documentElement.style.setProperty("--side-w", w); } catch (e) {}

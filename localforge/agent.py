@@ -503,10 +503,11 @@ class App:
                 if fb:
                     actions.append(fb)
             # Small models often finish a full answer and then ask for a needless click. Drop it.
+            dropped = False
             if len(tools.prose_of(full)) > 350 and actions and all(a.kind in ("click", "type", "press", "scroll", "page")
                                                                   for a in actions):
-                actions = []
-            if not actions and re.search(r"<(search|browse|fetch|extract|click|type|press|scroll|page|js|run|write|read|list|find)\b",
+                actions, dropped = [], True
+            if not actions and not dropped and re.search(r"<(search|browse|fetch|extract|click|type|press|scroll|page|js|run|write|read|list|find)\b",
                                          tools.strip_thinking(full), re.I) and not self.repeats:
                 self.repeats += 1
                 self._msg("tool", "A tool tag in your reply wasn't understood, so nothing was done. "
