@@ -24,7 +24,7 @@ def is_uncensored(name: str) -> bool:
     return any(m in n for m in UNCENSORED_MARKERS)
 
 
-QUANT_RE = re.compile(r"(MXFP4|IQ\d_\w+?|Q\d_K_[SML]|Q\d_K|Q\d_\d|F16|BF16|F32)(?=[._-])", re.I)
+QUANT_RE = re.compile(r"(MXFP4|IQ\d_\w+?|Q\d_K_[SML]|Q\d_K|Q\d_\d|F16|BF16|F32)(?=[.-])", re.I)
 SPLIT_RE = re.compile(r"-(\d{5})-of-(\d{5})\.gguf$", re.I)
 
 
