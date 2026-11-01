@@ -119,7 +119,10 @@ YOU HAVE YOUR OWN WEB BROWSER (the user watches it live in the Browser tab and s
 <press key="Enter"/>                          press a key (Enter, Tab, Escape, PageDown, ArrowDown...)
 <scroll dir="down"/>                          scroll down (or up) and read what is visible
 <js>return document.querySelectorAll('tr').length</js>   run JavaScript on the page to read or change its data
-Use the browser for anything current or online (news, prices, weather, docs, accounts the user is logged in to).
+Use the browser for anything current or online (news, prices, deals, weather, sports, docs, accounts the user is logged in to).
+For news, prices, deals, shops, weather or anything "latest", ALWAYS start with <search>, then <browse> one of the result links.
+Never make up or guess a web address. Only <browse> addresses the user gave you or that appeared in a result.
+If a site blocks you or shows an error, don't retry it: open a different result, or answer from the search snippets.
 To get data into code: <fetch> it first, then put the values into your python/javascript, or scrape the open page with <js>.
 
 Rules:
@@ -130,6 +133,8 @@ Rules:
 - If results are already given to you under [PC files], answer from them directly.
 - Only write, create, open or delete files when the user asks for it.
 - <write> must contain the entire file, never a partial snippet.
+- Never repeat the same search or open the same page twice. Two or three lookups are usually enough: then answer.
+- Once your code runs and one test confirms it works, stop testing and tell the user the result.
 - Answer directly. Do not lecture, moralize or explain your limitations.
 """.strip()
 
@@ -262,6 +267,30 @@ def execute(a: Action, index) -> str:
         return f"Error on {a.path}: {e}"
 
 
+BLOCK_SIGNS = re.compile(
+    r"access denied|you don't have permission to access|request blocked|403 forbidden|\b403\b.{0,40}forbidden|"
+    r"are you a (?:robot|human)|verify you are (?:a )?human|unusual traffic|captcha|bot detection|"
+    r"pardon our interruption|press (?:&|and) hold|checking your browser|attention required|"
+    r"enable javascript and cookies|this site can.t be reached|err_name_not_resolved|err_connection|"
+    r"dns_probe|page (?:not|cannot be) found|\b404\b.{0,40}not found|server not found", re.I)
+
+
+def blocked_hint(result: str) -> str:
+    """Spots block, CAPTCHA and error pages so the model searches instead of retrying the same site."""
+    m = re.search(r"Page text:\n([\s\S]*?)\n\nClickable", result)
+    text = m.group(1) if m else result[:3000]
+    if len(text) > 2500 or not BLOCK_SIGNS.search(text[:2500]):
+        return ""
+    return ("\n\n[LocalForge note] This page is an error or block page, not real content. Do NOT open this site again "
+            "and do not guess other addresses on it. Use <search query=\"...\"/> and open a result link instead, "
+            "or answer from the search snippets you already have.")
+
+
+def site_of(url: str) -> str:
+    m = re.match(r"(?:https?://)?(?:www\.)?([^/:?#]+)", url.strip(), re.I)
+    return m.group(1).lower() if m else ""
+
+
 def execute_browser(a: Action, browser) -> str:
     """Runs a browser action and returns what the model should see."""
     try:
@@ -269,11 +298,13 @@ def execute_browser(a: Action, browser) -> str:
             return browser.search(a.path)
         if a.kind == "browse":
             browser.navigate(a.path)
-            return browser.describe()
+            r = browser.describe()
+            return r + blocked_hint(r)
         if a.kind == "page":
             return browser.describe()
         if a.kind == "fetch":
-            return browser.fetch_raw(a.path)
+            r = browser.fetch_raw(a.path)
+            return r + blocked_hint(r)
         if a.kind == "scroll":
             browser.ensure()
             browser.eval("window.scrollBy(0, %d)" % (-int(browser.height * 0.8) if a.path.startswith("up") else int(browser.height * 0.8)))

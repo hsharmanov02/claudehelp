@@ -478,9 +478,9 @@ class Browser:
             data["text"] = data["text"][:max_text] + "\n…[page text cut — scroll or ask for more]"
         return data
 
-    def describe(self, max_text=7000, console=True) -> str:
+    def describe(self, max_text=4500, console=True) -> str:
         d = self.snapshot(max_text)
-        els = "\n".join(d["elements"][:120])
+        els = "\n".join(e[:110] for e in d["elements"][:70])
         problems = self.console_text(only_problems=True, limit=15) if console else ""
         return (f"Browser page: {d['title']}\nURL: {d['url']}\n\nPage text:\n{d['text'] or '(empty)'}\n\n"
                 f"Clickable / fillable elements (use their numbers):\n{els or '(none)'}"
@@ -563,9 +563,9 @@ class Browser:
         self.navigate(url)
         time.sleep(settle)
         logs = self.console_text(limit=40)
-        return self.describe(5000, console=False) + (f"\n\nConsole output:\n{logs}" if logs else "\n\nConsole: no output, no errors.")
+        return self.describe(3500, console=False) + (f"\n\nConsole output:\n{logs}" if logs else "\n\nConsole: no output, no errors.")
 
-    def fetch_raw(self, url: str, max_chars=15000) -> str:
+    def fetch_raw(self, url: str, max_chars=8000) -> str:
         """Loads a URL in the browser (with the user's cookies/logins) and returns its raw text, e.g. JSON or CSV."""
         self.navigate(url)
         txt = self.eval("document.contentType + '\\n' + (document.body ? (document.querySelector('pre') && document.body.children.length === 1 ? document.querySelector('pre').innerText : document.body.innerText) : '')") or ""

@@ -42,6 +42,8 @@ class App:
         self.browser_focus = 0        # bumps when code ran in the browser, so the UI can show it
         self.steps_left = 0
         self.done_lookups = {}
+        self.repeats = 0
+        self.blocked_sites = set()
         self.search_state = {"query": "", "results": [], "busy": False, "error": None}
         self.repo_state = {"repo": None, "files": [], "busy": False, "error": None}
         self.recs = {"items": [], "busy": False, "summary": None}
@@ -248,6 +250,8 @@ class App:
         user = self._msg("user", display, model_text)
         self.steps_left = 8
         self.done_lookups = {}   # tool calls already made for this request -> result
+        self.repeats = 0
+        self.blocked_sites = set()
         self.generating = True
         self.touch()
 
@@ -312,10 +316,19 @@ class App:
             parts.append("Nothing matched by name. " + self.index.overview())
         return "\n\n".join(parts)[:12000]
 
-    def _history(self) -> list[dict]:
+    CHARS_PER_TOKEN = 2.6     # web pages and code tokenise worse than prose; stay on the safe side
+    OLD_RESULT_CHARS = 1200   # older tool results are cut to this; the newest one stays whole
+
+    def _history(self, shrink: float = 1.0) -> list[dict]:
         s = self.settings
-        budget = max(1024, s.get("nCtx") - s.get("maxTokens") - 900) * 3
-        picked, used = [], 0
+        langs = sorted(runner.tools())
+        overview = "PC overview: " + self.index.overview()
+        sys_prompt = tools.system_prompt(str(Path.home()), str(config.work_dir()), langs, overview,
+                                         f"{platform.system()} {platform.release()}")
+        reply_room = min(s.get("maxTokens"), max(512, s.get("nCtx") // 3))
+        tokens = s.get("nCtx") - reply_room - len(sys_prompt) / self.CHARS_PER_TOKEN - 300
+        budget = int(max(600, tokens * self.CHARS_PER_TOKEN * shrink))
+        picked, used, newest_result = [], 0, True
         for m in reversed(self.messages):
             role = m["role"]
             if role == "user":
@@ -324,14 +337,18 @@ class App:
                 if not m["text"].strip():
                     continue
                 msg = {"role": "assistant", "content": m["text"]}
-            elif role == "tool":
-                msg = {"role": "user", "content": "[Tool results]\n" + m["text"]}
-            elif role == "run":
-                msg = {"role": "user", "content": "[Code output]\n" + (m["modelText"] or m["text"])}
+            elif role in ("tool", "run"):
+                body = m["text"] if role == "tool" else (m["modelText"] or m["text"])
+                if not newest_result and len(body) > self.OLD_RESULT_CHARS:
+                    body = body[:self.OLD_RESULT_CHARS] + "\n…[older result cut]"
+                newest_result = False
+                msg = {"role": "user", "content": ("[Tool results]\n" if role == "tool" else "[Code output]\n") + body}
             else:
                 continue
-            if used + len(msg["content"]) > budget and picked:
-                break
+            if used + len(msg["content"]) > budget:
+                if picked:
+                    break
+                msg["content"] = msg["content"][:budget] + "\n…[cut to fit the model's memory]"
             used += len(msg["content"])
             picked.insert(0, msg)
         # Merge consecutive same-role turns: many chat templates require alternating roles.
@@ -343,11 +360,23 @@ class App:
                 merged.append(msg)
         while merged and merged[0]["role"] != "user":
             merged.pop(0)
-        langs = sorted(runner.tools())
-        overview = "PC overview: " + self.index.overview()
-        sys_prompt = tools.system_prompt(str(Path.home()), str(config.work_dir()), langs, overview,
-                                         f"{platform.system()} {platform.release()}")
+        if not merged:
+            last = self._last_user_text()[:budget]
+            merged = [{"role": "user", "content": last or "Hello"}]
         return [{"role": "system", "content": sys_prompt}] + merged
+
+    def _chat(self, on_piece, reply):
+        """Asks the model, shrinking the history and retrying if it doesn't fit in the context."""
+        s = self.settings
+        reply_room = min(s.get("maxTokens"), max(512, s.get("nCtx") // 3))
+        for shrink in (1.0, 0.6, 0.35, 0.15):
+            try:
+                return self.engine.chat(self._history(shrink), reply_room, s.get("temperature"), on_piece)
+            except RuntimeError as e:
+                if "context" not in str(e).lower() or shrink == 0.15:
+                    raise
+                reply["text"] = ""
+        return ""
 
     def _last_user_text(self):
         for m in reversed(self.messages):
@@ -365,7 +394,7 @@ class App:
             def on_piece(p, reply=reply):
                 reply["text"] += p
                 self.version += 1
-            full = self.engine.chat(self._history(), s.get("maxTokens"), s.get("temperature"), on_piece)
+            full = self._chat(on_piece, reply)
             reply["text"] = tools.strip_thinking(full) or ("(stopped)" if self.stop_requested else "(no reply)")
             reply["stats"] = f"{self.engine.last_tps:.1f} tokens/sec"
             self.touch()
@@ -382,6 +411,10 @@ class App:
                 if fb:
                     actions.append(fb)
             if not actions:
+                if re.search(r"<run\b", full, re.I):
+                    self._msg("tool", "Your <run> tag had no code in it. Put the whole program between "
+                                      "<run lang=\"...\"> and </run>.")
+                    continue
                 break
             cont = False
             auto = s.get("autoApprove")
@@ -390,8 +423,10 @@ class App:
             blocked = False   # a browser step waits for approval; later browser steps depend on it
             for a in actions:
                 key = (a.kind, a.path, a.content)
-                if (a.read_only or a.browser_read) and key in self.done_lookups:
-                    results.append(f"You already did this ({a.label}) and got the result above. "
+                site = tools.site_of(a.path) if a.kind in ("browse", "fetch") else ""
+                if ((a.read_only or a.browser_read) and key in self.done_lookups) or (site and site in self.blocked_sites):
+                    self.repeats += 1
+                    results.append(f"You already did this ({a.label}) or that site blocked you. "
                                    "Do not repeat it. Use what you have and answer the user now.")
                     continue
                 if a.read_only:
@@ -403,7 +438,10 @@ class App:
                         continue
                     if a.browser_read:
                         self._set_status(a.label + "…")
-                        results.append(tools.execute_browser(a, self.browser))
+                        r = tools.execute_browser(a, self.browser)
+                        if site and "[LocalForge note]" in r:
+                            self.blocked_sites.add(site)
+                        results.append(r)
                         if a.kind != "scroll":
                             self.done_lookups[key] = True
                         continue
@@ -431,6 +469,10 @@ class App:
                 elif auto and a.kind == "open" and not a.path.lower().endswith(tools.RISKY_OPEN):
                     pa["status"] = "done"
                     pa["result"] = tools.execute(a, self.index)
+            if self.repeats >= 2 and self.steps_left > 1:
+                results.append("STOP using tools now. Write your final answer to the user from the results above. "
+                               "If you couldn't get the information, say so and share what you did find.")
+                self.steps_left = 1
             if results:
                 self._msg("tool", "\n\n".join(results))
                 cont = True
@@ -495,39 +537,39 @@ class App:
             return
         d = pa["action"]
         a = tools.Action(d["kind"], d["path"], d["content"], d.get("extra", ""))
-        if a.kind == "run" or a.is_browser:
-            if self.generating:
-                pa["result"] = "Wait for the current reply to finish."
-                self.touch()
-                return
-            pa["status"] = "done"
-            self.generating = True
+        if self.generating:
+            pa["result"] = "Wait for the current reply to finish."
             self.touch()
-
-            def job():
-                try:
-                    if a.is_browser:
-                        r = tools.execute_browser(a, self.browser)
-                        pa["result"] = self._short(r)
-                        self._msg("tool", r)
-                    else:
-                        self._execute_run(a, pa)
-                    if self.engine.loaded:
-                        if self.steps_left <= 0:
-                            self.steps_left = 3
-                        self._agent_loop()
-                except Exception as e:
-                    self._msg("note", str(e))
-                finally:
-                    self.generating = False
-                    self.save_chat()
-                    self.touch()
-            threading.Thread(target=job, daemon=True).start()
             return
         pa["status"] = "done"
-        pa["result"] = tools.execute(a, self.index)
-        self.save_chat()
+        self.generating = True
         self.touch()
+        msg = next((m for m in self.messages if m["id"] == msg_id), None)
+
+        def job():
+            try:
+                if a.is_browser:
+                    r = tools.execute_browser(a, self.browser)
+                    pa["result"] = self._short(r)
+                    self._msg("tool", r)
+                elif a.kind == "run":
+                    self._execute_run(a, pa)
+                else:
+                    pa["result"] = tools.execute(a, self.index)
+                    self._msg("tool", pa["result"])
+                # Carry on once every card in that reply has been answered.
+                waiting = msg and any(x["status"] == "pending" for x in msg["actions"])
+                if self.engine.loaded and not waiting:
+                    if self.steps_left <= 0:
+                        self.steps_left = 3
+                    self._agent_loop()
+            except Exception as e:
+                self._msg("note", str(e))
+            finally:
+                self.generating = False
+                self.save_chat()
+                self.touch()
+        threading.Thread(target=job, daemon=True).start()
 
     def reject(self, msg_id: int, idx: int):
         pa = self._find_action(msg_id, idx)
