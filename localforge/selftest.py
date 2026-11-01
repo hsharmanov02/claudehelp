@@ -92,6 +92,11 @@ def run() -> int:
             assert title == "clicked forge", title
             ok, out = b.run_code("console.log([1, 2, 3].map(x => x * 2)); return 'done'")
             assert ok and "[2, 4, 6]" in out and "done" in out, out
+            b.navigate("data:text/html,<table><tr><th>City</th><th>Pop</th></tr><tr><th>Jakarta</th><td>41,913,860</td></tr>"
+                       "<tr><th>Dhaka</th><td>36,585,479</td></tr></table>")
+            ex = b.extract("city")
+            assert "Jakarta | 41,913,860" in ex, ex
+            assert b.run_js("const n = 2; n * 21") in ("42", 42), "js last expression"
             ok, out = b.run_code("undefinedThing()")
             assert not ok and "undefinedThing" in out, out
             b.navigate("https://example.com")
