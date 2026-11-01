@@ -68,6 +68,12 @@ def make_handler(app, pick_file=None):
                 return self._json(list_dir(q.get("dir", [str(Path.home())])[0]))
             if u.path == "/api/file":
                 return self._json(read_file(q.get("path", [""])[0]))
+            if u.path == "/api/browser/frame":
+                since = int(q.get("since", ["0"])[0])
+                seq, frame = app.browser.screenshot_wait(since, 15)
+                if not frame:
+                    return self._send(204, b"", "text/plain", {"X-Frame-Seq": str(seq)})
+                return self._send(200, frame, "image/jpeg", {"X-Frame-Seq": str(seq)})
             if u.path == "/preview":
                 p = Path(q.get("path", [""])[0])
                 if p.is_file() and p.suffix.lower() in (".html", ".htm"):
@@ -147,11 +153,60 @@ def route(app, action, b, pick_file):
             app.engine.unload()
             os._exit(0)
         threading.Thread(target=bye, daemon=True).start()
+    elif action.startswith("browser/"):
+        return browser_action(app, action.split("/", 1)[1], b)
     elif action == "file-op":
         return file_op(b)
     else:
         return {"error": f"unknown action {action}"}
     return {"ok": True}
+
+
+def browser_action(app, op, b):
+    br = app.browser
+    try:
+        if op == "start":
+            br.ensure()
+            if not br.url or br.url == "about:blank":
+                threading.Thread(target=lambda: _safe(lambda: br.navigate("https://duckduckgo.com/")), daemon=True).start()
+        elif op == "navigate":
+            threading.Thread(target=lambda: _safe(lambda: br.navigate(b["url"]), app), daemon=True).start()
+        elif op == "back":
+            br.history(-1)
+        elif op == "forward":
+            br.history(1)
+        elif op == "reload":
+            br.reload()
+        elif op == "click":
+            br.click_xy(float(b["x"]), float(b["y"]), count=int(b.get("count", 1)))
+        elif op == "scroll":
+            br.scroll(float(b["dy"]), b.get("x"), b.get("y"))
+        elif op == "type":
+            br.type_text(b["text"])
+        elif op == "key":
+            br.key(b["key"])
+        elif op == "resize":
+            br.resize(int(b["width"]), int(b["height"]))
+        elif op == "stop":
+            br.close()
+        else:
+            return {"error": f"unknown browser action {op}"}
+        br.error = None
+    except Exception as e:
+        br.error = str(e)
+        return {"error": str(e)}
+    finally:
+        app.touch()
+    return {"ok": True}
+
+
+def _safe(fn, app=None):
+    try:
+        fn()
+    except Exception as e:
+        if app:
+            app.browser.error = str(e)
+            app.touch()
 
 
 def list_dir(d: str) -> dict:

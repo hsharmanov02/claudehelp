@@ -65,6 +65,27 @@ def run() -> int:
     check("powershell/shell runner", lambda: runner.run("powershell" if os.name == "nt" else "shell", "echo hi").output)
     check("sql runner", lambda: runner.run("sql", "select 1+1 as two;").output)
 
+    def browser_test():
+        from .browser import Browser
+        b = Browser()
+        try:
+            b.navigate("data:text/html,<title>LF</title><input id=a placeholder=name><button onclick=\"document.title='clicked '+a.value\">Go</button>")
+            d = b.describe()
+            assert "[1]" in d and "[2]" in d, d
+            b.fill(1, "forge")
+            b.click_element(2)
+            title = b.run_js("return document.title")
+            assert title == "clicked forge", title
+            b.navigate("https://example.com")
+            text = b.snapshot()["text"]
+            assert "Example Domain" in text, text[:200]
+            seq, frame = b.screenshot_wait(0, 5)
+            assert frame, "no screen frames"
+            return f"{b.exe} | {title} | example.com ok | {len(frame)} byte frame"
+        finally:
+            b.close()
+    check("built-in browser (open, read, type, click, script)", browser_test)
+
     results = check("hugging face search", lambda: [r["id"] for r in hf.search("qwen", None)[:5]])
     if pc:
         check("recommendations", lambda: [(p["file"]["repo"], p["file"]["fileName"], p["reason"]) for p in hf.recommend(pc, None, 5)], required=False)

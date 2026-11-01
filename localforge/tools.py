@@ -15,13 +15,23 @@ RISKY_OPEN = (".exe", ".msi", ".bat", ".cmd", ".ps1", ".vbs", ".js", ".lnk", ".s
 
 @dataclass(frozen=True)
 class Action:
-    kind: str        # list | read | find | write | mkdir | delete | run | open
-    path: str        # path, search words, or language for run
+    kind: str        # list | read | find | write | mkdir | delete | run | open | browser kinds below
+    path: str        # path, search words, language for run, url, or element number
     content: str = ""
+    extra: str = ""
 
     @property
     def read_only(self) -> bool:
         return self.kind in ("list", "read", "find")
+
+    @property
+    def is_browser(self) -> bool:
+        return self.kind in BROWSER_KINDS
+
+    @property
+    def browser_read(self) -> bool:
+        """Browser actions that only look (run without asking)."""
+        return self.kind in ("search", "browse", "page", "scroll")
 
     @property
     def label(self) -> str:
@@ -30,10 +40,18 @@ class Action:
             "write": f"Write {len(self.content)} chars to {self.path}", "mkdir": f"Create folder {self.path}",
             "delete": f"Delete {self.path}", "open": f"Open {self.path}",
             "run": f"Run {self.path} code ({len(self.content.splitlines())} lines)",
+            "search": f'Search the web for "{self.path}"', "browse": f"Open {self.path} in the browser",
+            "page": "Read the browser page", "scroll": f"Scroll the page {self.path}",
+            "click": f"Click [{self.path}] in the browser", "press": f"Press {self.path} in the browser",
+            "type": f'Type "{self.content[:60]}" into [{self.path}]' + (" and submit" if self.extra == "submit" else ""),
+            "js": f"Run a script on the browser page ({len(self.content.splitlines())} lines)",
         }[self.kind]
 
     def to_dict(self):
-        return {"kind": self.kind, "path": self.path, "content": self.content, "label": self.label}
+        return {"kind": self.kind, "path": self.path, "content": self.content, "extra": self.extra, "label": self.label}
+
+
+BROWSER_KINDS = ("search", "browse", "page", "scroll", "click", "type", "press", "js")
 
 
 THINK = re.compile(r"<think>[\s\S]*?(</think>|$)", re.I)
@@ -41,6 +59,14 @@ SIMPLE = re.compile(r'<(list|read|mkdir|delete|open)\s+path\s*=\s*"([^"]+)"\s*/?
 FIND = re.compile(r'<find\s+(?:query|name|q)\s*=\s*"([^"]+)"\s*/?>', re.I)
 WRITE = re.compile(r'<write\s+path\s*=\s*"([^"]+)"\s*>\r?\n?([\s\S]*?)</write>', re.I)
 RUN = re.compile(r'<run(?:\s+lang(?:uage)?\s*=\s*"([^"]*)")?\s*>\r?\n?([\s\S]*?)(</run>|$)', re.I)
+B_SEARCH = re.compile(r'<search\s+(?:query|q)\s*=\s*"([^"]+)"\s*/?>', re.I)
+B_BROWSE = re.compile(r'<(?:browse|goto|navigate)\s+(?:url|href)\s*=\s*"([^"]+)"\s*/?>', re.I)
+B_PAGE = re.compile(r'<page\s*/?>', re.I)
+B_SCROLL = re.compile(r'<scroll(?:\s+(?:dir|direction)\s*=\s*"([^"]*)")?\s*/?>', re.I)
+B_CLICK = re.compile(r'<click\s+(?:n|id|element)\s*=\s*"?(\d+)"?\s*/?>', re.I)
+B_PRESS = re.compile(r'<press\s+key\s*=\s*"([^"]+)"\s*/?>', re.I)
+B_TYPE = re.compile(r'<type\s+(?:n|id|element)\s*=\s*"?(\d+)"?(\s+submit\s*=\s*"?(?:true|yes|1)"?)?\s*>([\s\S]*?)</type>', re.I)
+B_JS = re.compile(r'<js>\r?\n?([\s\S]*?)</js>', re.I)
 FENCE = re.compile(r"```([\w+#.-]*)[ \t]*\r?\n([\s\S]*?)```")
 
 
@@ -78,9 +104,21 @@ complete new file content here
 <open path="{Path(home) / 'Pictures' / 'photo.jpg'}"/>   open a file with its normal Windows app
 {overview}
 
+YOU HAVE YOUR OWN WEB BROWSER (the user watches it live in the Browser tab and stays logged in to sites there).
+<search query="best budget gpu 2026"/>        search the web; you get titles, links and snippets
+<browse url="https://example.com"/>           open a page; you get its text and numbered clickable/fillable elements
+<page/>                                       read the current page again
+<click n="12"/>                               click element [12]
+<type n="5">text to enter</type>              fill input [5]; add submit="true" to press Enter after
+<press key="Enter"/>                          press a key (Enter, Tab, Escape, PageDown, ArrowDown...)
+<scroll dir="down"/>                          scroll down (or up) and read what is visible
+<js>return document.querySelectorAll('tr').length</js>   run JavaScript on the page to read or change its data
+Use the browser for anything current or online (news, prices, weather, docs, accounts the user is logged in to).
+
 Rules:
 - Always use full paths.
-- After <find>, <run>, <list> or <read>, stop your reply and wait for the result.
+- After <find>, <run>, <list>, <read> or any browser tag, stop your reply and wait for the result.
+- Use element numbers from the latest page result only. Re-read the page if unsure.
 - If results are already given to you under [PC files], answer from them directly.
 - Only write, create, open or delete files when the user asks for it.
 - <write> must contain the entire file, never a partial snippet.
@@ -106,6 +144,27 @@ def parse(raw: str) -> list[Action]:
         found.append((m.start(), Action("find", m.group(1).strip())))
     for m in SIMPLE.finditer(reply):
         found.append((m.start(), Action(m.group(1).lower(), m.group(2).strip())))
+    for m in B_SEARCH.finditer(reply):
+        found.append((m.start(), Action("search", m.group(1).strip())))
+    for m in B_BROWSE.finditer(reply):
+        found.append((m.start(), Action("browse", m.group(1).strip())))
+    for m in B_PAGE.finditer(reply):
+        found.append((m.start(), Action("page", "")))
+    for m in B_SCROLL.finditer(reply):
+        found.append((m.start(), Action("scroll", (m.group(1) or "down").strip().lower())))
+    for m in B_CLICK.finditer(reply):
+        found.append((m.start(), Action("click", m.group(1))))
+    for m in B_PRESS.finditer(reply):
+        found.append((m.start(), Action("press", m.group(1).strip())))
+    for m in B_TYPE.finditer(reply):
+        found.append((m.start(), Action("type", m.group(1), m.group(3), "submit" if m.group(2) else "")))
+    for m in B_JS.finditer(reply):
+        code = m.group(1).strip()
+        f = FENCE.search(code)
+        if f:
+            code = f.group(2).strip()
+        if code:
+            found.append((m.start(), Action("js", "page", code)))
     found.sort(key=lambda x: x[0])
     out = []
     for _, a in found:
@@ -191,3 +250,40 @@ def execute(a: Action, index) -> str:
         return "Run actions are handled separately"
     except Exception as e:
         return f"Error on {a.path}: {e}"
+
+
+def execute_browser(a: Action, browser) -> str:
+    """Runs a browser action and returns what the model should see."""
+    try:
+        if a.kind == "search":
+            return browser.search(a.path)
+        if a.kind == "browse":
+            browser.navigate(a.path)
+            return browser.describe()
+        if a.kind == "page":
+            return browser.describe()
+        if a.kind == "scroll":
+            browser.ensure()
+            browser.eval("window.scrollBy(0, %d)" % (-int(browser.height * 0.8) if a.path.startswith("up") else int(browser.height * 0.8)))
+            import time as _t
+            _t.sleep(0.4)
+            return "Scrolled. Visible part of the page:\n" + browser.eval(
+                "(() => { const t = []; const w = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT); let n;"
+                " while ((n = w.nextNode())) { const r = n.parentElement && n.parentElement.getBoundingClientRect();"
+                " if (r && r.bottom > 0 && r.top < innerHeight && n.textContent.trim()) t.push(n.textContent.trim()); }"
+                " return t.join(' ').slice(0, 5000); })()")
+        if a.kind == "click":
+            browser.click_element(int(a.path))
+            return "Clicked. Now:\n" + browser.describe(4000)
+        if a.kind == "type":
+            browser.fill(int(a.path), a.content, submit=(a.extra == "submit"))
+            return ("Typed and submitted. Now:\n" if a.extra == "submit" else "Typed. Now:\n") + browser.describe(4000)
+        if a.kind == "press":
+            browser.key(a.path)
+            browser.wait_loaded(5)
+            return f"Pressed {a.path}. Now:\n" + browser.describe(4000)
+        if a.kind == "js":
+            return "Script result:\n" + browser.run_js(a.content)
+    except Exception as e:
+        return f"Browser error ({a.label}): {e}"
+    return "Unknown browser action"

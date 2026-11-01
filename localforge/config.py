@@ -65,6 +65,7 @@ DEFAULTS = {
     "temperature": 0.4,
     "maxTokens": 2048,
     "autoApprove": False,
+    "browserAutoApprove": False,
     "hfToken": "",
     "lastModel": None,
     "foundModels": [],

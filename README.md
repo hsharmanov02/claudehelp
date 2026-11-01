@@ -26,6 +26,9 @@ Keep the `engines` folder next to `LocalForge.exe`.
   Writing, running and opening need your click on an approval card unless you turn on auto-approve; deletes always ask.
 - Writes and runs its own code, reads the output and fixes errors: Python (built in), SQL (SQLite), HTML (shown in the app),
   PowerShell and CMD always work; JavaScript/TypeScript, C/C++, Java, Go, Rust, Ruby, PHP, Lua, Perl work when installed.
+- Has its own web browser in the **Browser** tab (runs on the Edge that comes with Windows, in the background, with its own profile so your logins stay).
+  You can browse it yourself, and the AI can search the web, open pages, read them, click, fill in forms and run JavaScript on the page to read or change data.
+  Reading is automatic; clicking, typing and scripts show an approval card unless you tick "Let the AI click and type here without asking".
 - File manager with a text editor and "Ask AI about this file".
 - Chat is saved between runs.
 

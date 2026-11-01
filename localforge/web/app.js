@@ -50,6 +50,7 @@ function setTab(t) {
   document.querySelectorAll(".page").forEach(p => p.classList.toggle("active", p.id === "tab-" + t));
   if (t === "files" && filesDir === null) openDir(S?.home || "");
   if (t === "chat") { syncMessages(); setTimeout(() => $("#input").focus(), 50); }
+  if (t === "browser") startBrowser();
   render();
 }
 document.querySelectorAll(".tab").forEach(b => b.onclick = () => setTab(b.dataset.tab));
@@ -67,6 +68,7 @@ function render() {
   if (S.preview && $("#modal").dataset.preview !== S.preview) showPreview(S.preview);
   if (tab === "home") renderHome();
   if (tab === "models") renderModels();
+  if (tab === "browser") renderBrowser();
 }
 
 // ---------- HOME ----------
@@ -243,8 +245,8 @@ function md(src) {
       continue;
     }
     let h = esc(part)
-      .replace(/&lt;(write|run)[\s\S]*?(&lt;\/\1&gt;|$)/g, "")       // tool tags are shown as cards instead
-      .replace(/&lt;(find|list|read|mkdir|delete|open)\s[^&]*?\/?&gt;/g, m => `<span class="pill">${m}</span>`)
+      .replace(/&lt;(write|run|type|js)[\s\S]*?(&lt;\/\1&gt;|$)/g, "")       // tool tags are shown as cards instead
+      .replace(/&lt;(find|list|read|mkdir|delete|open|search|browse|page|click|press|scroll)(\s[^&]*?)?\/?&gt;/g, m => `<span class="pill">${m}</span>`)
       .replace(/`([^`\n]+)`/g, "<code>$1</code>")
       .replace(/\*\*([^*\n]+)\*\*/g, "<b>$1</b>")
       .replace(/(^|[^*])\*([^*\n]+)\*/g, "$1<i>$2</i>")
@@ -274,7 +276,7 @@ const rendered = new Map();   // id -> signature
 function msgSig(m) { return m.text.length + "|" + m.text.slice(-20) + "|" + (m.stats || "") + "|" + m.actions.map(a => a.status + (a.result || "")).join(","); }
 
 function renderMsg(m, isLast) {
-  const who = { user: "You", assistant: "LocalForge", tool: "📂 Files", run: "▶ Code output", note: "" }[m.role];
+  const who = { user: "You", assistant: "LocalForge", tool: "🔧 Tool results", run: "▶ Code output", note: "" }[m.role];
   let body;
   if (m.role === "assistant") {
     const thinkingOnly = m.text.replace(/⁣/g, "").trim() === "" && S.generating && isLast;
@@ -282,7 +284,8 @@ function renderMsg(m, isLast) {
     if (S.generating && isLast && !thinkingOnly) body += '<span class="cursor"></span>';
   } else if (m.role === "tool") {
     const first = m.text.split("\n")[0];
-    body = `<details><summary>${esc(first.slice(0, 140))}</summary>${esc(m.text)}</details>`;
+    const web = /^(Browser|Web search|Clicked|Typed|Pressed|Scrolled|Script result)/.test(first);
+    body = `<details><summary>${web ? "🌐 " : ""}${esc(first.slice(0, 140))}</summary>${esc(m.text)}</details>${web ? '<button class="small ghost" data-go="browser" style="margin-top:6px">View in Browser →</button>' : ""}`;
   } else if (m.role === "user") body = md(m.text);
   else body = esc(m.text);
   const actions = (m.actions || []).map((a, i) => {
@@ -451,6 +454,77 @@ async function openEditor(path) {
   const sv = $("#save-file");
   if (sv) sv.onclick = () => api("file-op", { op: "save", path, text: $("#editor").value });
 }
+
+// ---------- BROWSER ----------
+let brSeq = 0, brLoop = false, brStarted = false;
+async function startBrowser() {
+  if (!brStarted) { brStarted = true; api("browser/start"); }
+  if (brLoop) return;
+  brLoop = true;
+  while (tab === "browser") {
+    try {
+      const r = await fetch(`/api/browser/frame?since=${brSeq}`, { headers: { "X-LF-Token": LF_TOKEN } });
+      const seq = +(r.headers.get("X-Frame-Seq") || brSeq);
+      if (r.status === 200) {
+        const url = URL.createObjectURL(await r.blob());
+        const img = $("#br-img"), old = img.src;
+        img.src = url; if (old.startsWith("blob:")) setTimeout(() => URL.revokeObjectURL(old), 1000);
+        $("#br-empty").classList.add("hidden");
+      } else await new Promise(res => setTimeout(res, 400));
+      brSeq = seq;
+    } catch (e) { await new Promise(res => setTimeout(res, 800)); }
+  }
+  brLoop = false;
+}
+let brSize = "";
+function fitBrowser() {
+  const v = $("#br-view"); if (!v || tab !== "browser") return;
+  const w = Math.max(640, Math.min(1920, Math.floor(v.clientWidth))), h = Math.max(400, Math.min(1400, Math.floor(v.clientHeight)));
+  const key = w + "x" + h;
+  if (key !== brSize && v.clientWidth > 0) { brSize = key; api("browser/resize", { width: w, height: h }); }
+}
+window.addEventListener("resize", () => { clearTimeout(window._fitT); window._fitT = setTimeout(fitBrowser, 250); });
+function renderBrowser() {
+  fitBrowser();
+  const b = S.browser;
+  const urlBox = $("#br-url");
+  if (document.activeElement !== urlBox && b.url && b.url !== "about:blank") urlBox.value = b.url;
+  $("#br-title").textContent = b.title || "";
+  $("#br-loading").classList.toggle("hidden", !b.loading);
+  $("#br-auto").checked = !!S.settings.browserAutoApprove;
+  const ban = $("#br-banner");
+  const msg = !b.available ? "No Edge or Chrome was found. Install Microsoft Edge or Google Chrome to use the browser." : b.error;
+  ban.classList.toggle("hidden", !msg); ban.textContent = msg || "";
+  if (!b.running && brStarted && b.available && !b.error) { $("#br-empty").textContent = "Browser stopped. Type an address to start it again."; }
+}
+function brPoint(e) {
+  const img = $("#br-img"), r = img.getBoundingClientRect(), b = S.browser;
+  return { x: (e.clientX - r.left) * b.width / r.width, y: (e.clientY - r.top) * b.height / r.height };
+}
+$("#br-img").addEventListener("mousedown", e => e.preventDefault());
+$("#br-img").addEventListener("click", e => { $("#br-view").focus(); const p = brPoint(e); api("browser/click", p); });
+$("#br-img").addEventListener("dblclick", e => { const p = brPoint(e); api("browser/click", { ...p, count: 2 }); });
+let wheelAcc = 0, wheelTimer;
+$("#br-view").addEventListener("wheel", e => {
+  e.preventDefault(); wheelAcc += e.deltaY; const p = brPoint(e);
+  clearTimeout(wheelTimer); wheelTimer = setTimeout(() => { api("browser/scroll", { dy: wheelAcc, x: p.x, y: p.y }); wheelAcc = 0; }, 40);
+}, { passive: false });
+const BR_KEYS = { Enter: "enter", Tab: "tab", Escape: "escape", Backspace: "backspace", Delete: "delete", ArrowUp: "arrowup", ArrowDown: "arrowdown",
+  ArrowLeft: "arrowleft", ArrowRight: "arrowright", PageUp: "pageup", PageDown: "pagedown", Home: "home", End: "end" };
+let typeBuf = "", typeTimer;
+$("#br-view").addEventListener("keydown", e => {
+  if (e.ctrlKey || e.metaKey || e.altKey) return;      // let Ctrl+V reach the paste handler
+  if (BR_KEYS[e.key]) { e.preventDefault(); flushType(); api("browser/key", { key: BR_KEYS[e.key] }); return; }
+  if (e.key.length === 1) { e.preventDefault(); typeBuf += e.key; clearTimeout(typeTimer); typeTimer = setTimeout(flushType, 60); }
+});
+function flushType() { if (typeBuf) { api("browser/type", { text: typeBuf }); typeBuf = ""; } }
+$("#br-view").addEventListener("paste", e => { const t = e.clipboardData.getData("text"); if (t) { e.preventDefault(); api("browser/type", { text: t }); } });
+$("#br-form").onsubmit = e => { e.preventDefault(); const u = $("#br-url").value.trim(); if (u) { api("browser/navigate", { url: u }); $("#br-view").focus(); } };
+$("#br-back").onclick = () => api("browser/back");
+$("#br-fwd").onclick = () => api("browser/forward");
+$("#br-reload").onclick = () => api("browser/reload");
+$("#br-auto").onchange = e => api("settings", { browserAutoApprove: e.target.checked });
+$("#br-ask").onclick = () => { $("#input").value = "Read the page open in the browser (use <page/>) and summarize it."; setTab("chat"); autosize(); $("#input").focus(); };
 
 document.addEventListener("keydown", e => { if (e.key === "Escape" && !$("#modal").classList.contains("hidden")) closeModal(); });
 poll();

@@ -12,6 +12,7 @@ import urllib.request
 from pathlib import Path
 
 from . import config
+from .procs import tie_to_app
 from .hardware import PcInfo
 
 NO_WINDOW = 0x08000000 if os.name == "nt" else 0
@@ -117,6 +118,7 @@ class Engine:
             args, cwd=str(Path(exe).parent), stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
             stdin=subprocess.DEVNULL, creationflags=NO_WINDOW,
         )
+        tie_to_app(self.proc)
         threading.Thread(target=self._pump, args=(self.proc,), daemon=True).start()
         deadline = time.time() + 600
         while time.time() < deadline:

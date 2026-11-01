@@ -1,1 +1,2 @@
 pywebview>=5.3
+websocket-client>=1.7

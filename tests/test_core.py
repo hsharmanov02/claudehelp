@@ -52,3 +52,10 @@ def test_file_index_search(tmp_path, monkeypatch):
     hits = idx.search("find my cv pdf")
     assert hits and hits[0][0].endswith("my_cv.pdf")
     assert idx.search("music")[0][0].endswith("song.mp3")
+
+
+def test_browser_tags():
+    acts = tools.parse('<search query="gpu prices"/>\n<browse url="https://a.com"/>\n<click n="4"/>\n<type n="2" submit="true">hi</type>\n<js>return 1</js>')
+    assert [a.kind for a in acts] == ["search", "browse", "click", "type", "js"]
+    assert acts[0].browser_read and acts[1].browser_read and not acts[2].browser_read
+    assert acts[3].extra == "submit" and acts[3].content == "hi"

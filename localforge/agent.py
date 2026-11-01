@@ -8,6 +8,7 @@ import time
 from pathlib import Path
 
 from . import config, hardware, hf, runner, tools
+from .browser import Browser
 from .engine import Engine, available_backends
 from .fileindex import FileIndex
 from .models import ModelStore
@@ -17,6 +18,7 @@ FILE_WORDS = re.compile(
     r"photo|photos|picture|pictures|image|images|screenshot|screenshots|video|videos|music|song|songs|audio|pdf|pdfs|"
     r"exe|zip|find|search|locate|where|list|open|read|show me|look in|in my|on my (pc|computer|laptop))\b", re.I)
 WIN_PATH = re.compile(r"[A-Za-z]:\\[^\s\"'`<>|*?]*")
+WEB_WORDS = re.compile(r"\b(web|online|internet|browser|browse|website|site|google|url|http|https|www|news|weather|price|prices)\b", re.I)
 NIX_PATH = re.compile(r"(?<![\w])/(?:home|Users|mnt|tmp|var|opt)/[^\s\"'`]+")
 
 
@@ -26,6 +28,7 @@ class App:
         self.store = ModelStore(self.settings)
         self.engine = Engine()
         self.index = FileIndex()
+        self.browser = Browser(on_change=self.touch)
         self.pc = None
         self.lock = threading.RLock()
         self.version = 0
@@ -76,6 +79,7 @@ class App:
             "repo": self.repo_state,
             "recs": self.recs,
             "tools": runner.tools(),
+            "browser": self.browser.state(),
             "index": {"ready": self.index.ready, "building": self.index.building, "count": len(self.index.entries)},
             "workDir": str(config.work_dir()),
             "modelsDir": str(self.store.dir),
@@ -85,7 +89,7 @@ class App:
     # ---------- settings ----------
     def update_settings(self, values: dict):
         allowed = {"nCtx": int, "threads": int, "gpuLayers": int, "backend": str, "temperature": float,
-                   "maxTokens": int, "autoApprove": bool, "hfToken": str}
+                   "maxTokens": int, "autoApprove": bool, "browserAutoApprove": bool, "hfToken": str}
         for k, v in values.items():
             if k in allowed:
                 self.settings.set(k, allowed[k](v))
@@ -258,7 +262,7 @@ class App:
                         self._msg("note", self.status or "Couldn't load the model.")
                         return
                     self.generating = True
-                if FILE_WORDS.search(text) or WIN_PATH.search(text) or NIX_PATH.search(text):
+                if WIN_PATH.search(text) or NIX_PATH.search(text) or (FILE_WORDS.search(text) and not WEB_WORDS.search(text)):
                     ctx = self._file_context(text)
                     if ctx:
                         user["modelText"] = (model_text or text) + "\n\n[PC files - found automatically by the app]\n" + ctx
@@ -317,7 +321,7 @@ class App:
                     continue
                 msg = {"role": "assistant", "content": m["text"]}
             elif role == "tool":
-                msg = {"role": "user", "content": "[File results]\n" + m["text"]}
+                msg = {"role": "user", "content": "[Tool results]\n" + m["text"]}
             elif role == "run":
                 msg = {"role": "user", "content": "[Code output]\n" + (m["modelText"] or m["text"])}
             else:
@@ -377,7 +381,31 @@ class App:
                 break
             cont = False
             auto = s.get("autoApprove")
-            for a in [a for a in actions if not a.read_only]:
+            browser_auto = auto or s.get("browserAutoApprove")
+            results = []
+            blocked = False   # a browser step waits for approval; later browser steps depend on it
+            for a in actions:
+                if a.read_only:
+                    results.append(tools.execute(a, self.index))
+                    continue
+                if a.is_browser:
+                    if blocked:
+                        continue
+                    if a.browser_read:
+                        self._set_status(a.label + "…")
+                        results.append(tools.execute_browser(a, self.browser))
+                        continue
+                    pa = {"id": len(reply["actions"]), "action": a.to_dict(), "status": "pending", "result": None}
+                    reply["actions"].append(pa)
+                    self.touch()
+                    if browser_auto:
+                        pa["status"] = "done"
+                        r = tools.execute_browser(a, self.browser)
+                        pa["result"] = self._short(r)
+                        results.append(r)
+                    else:
+                        blocked = True
+                    continue
                 pa = {"id": len(reply["actions"]), "action": a.to_dict(), "status": "pending", "result": None}
                 reply["actions"].append(pa)
                 self.touch()
@@ -391,9 +419,7 @@ class App:
                 elif auto and a.kind == "open" and not a.path.lower().endswith(tools.RISKY_OPEN):
                     pa["status"] = "done"
                     pa["result"] = tools.execute(a, self.index)
-            reads = [a for a in actions if a.read_only]
-            if reads:
-                results = [tools.execute(a, self.index) for a in reads]
+            if results:
                 self._msg("tool", "\n\n".join(results))
                 cont = True
             if not cont:
@@ -428,8 +454,8 @@ class App:
         if not pa or pa["status"] != "pending":
             return
         d = pa["action"]
-        a = tools.Action(d["kind"], d["path"], d["content"])
-        if a.kind == "run":
+        a = tools.Action(d["kind"], d["path"], d["content"], d.get("extra", ""))
+        if a.kind == "run" or a.is_browser:
             if self.generating:
                 pa["result"] = "Wait for the current reply to finish."
                 self.touch()
@@ -440,7 +466,12 @@ class App:
 
             def job():
                 try:
-                    self._execute_run(a, pa)
+                    if a.is_browser:
+                        r = tools.execute_browser(a, self.browser)
+                        pa["result"] = self._short(r)
+                        self._msg("tool", r)
+                    else:
+                        self._execute_run(a, pa)
                     if self.engine.loaded:
                         if self.steps_left <= 0:
                             self.steps_left = 3
@@ -491,6 +522,15 @@ class App:
             self.next_id = max([m["id"] for m in data] + [0]) + 1
         except Exception:
             pass
+
+    @staticmethod
+    def _short(result: str) -> str:
+        """One line for an action card: the error, or the page the browser ended up on."""
+        first = result.split("\n", 1)[0]
+        if first.startswith("Browser error") or first.startswith("Script result"):
+            return result[:200]
+        m = re.search(r"Browser page: (.*)", result)
+        return f"{first.rstrip(':').replace(' Now', '')} - now on: {m.group(1)[:120]}" if m else first[:200]
 
     @staticmethod
     def _looks_broken(text: str) -> bool:
