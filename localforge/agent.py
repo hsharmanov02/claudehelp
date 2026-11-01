@@ -96,7 +96,7 @@ class App:
     # ---------- settings ----------
     def update_settings(self, values: dict):
         allowed = {"nCtx": int, "threads": int, "gpuLayers": int, "backend": str, "temperature": float,
-                   "maxTokens": int, "autoApprove": bool, "browserAutoApprove": bool, "hfToken": str}
+                   "maxTokens": int, "think": bool, "autoApprove": bool, "browserAutoApprove": bool, "hfToken": str}
         for k, v in values.items():
             if k in allowed:
                 self.settings.set(k, allowed[k](v))
@@ -253,6 +253,7 @@ class App:
         self.steps_left = 12
         self.total_steps = 0
         self.last_reply = None
+        self.seen_urls = set()
         self.ran_code = False
         self.failed_code = set()
         self.done_lookups = {}   # tool calls already made for this request -> result
@@ -333,7 +334,8 @@ class App:
         overview = "PC overview: " + self.index.overview()
         sys_prompt = tools.system_prompt(str(Path.home()), str(config.work_dir()), langs, overview,
                                          f"{platform.system()} {platform.release()}")
-        reply_room = min(s.get("maxTokens"), max(512, s.get("nCtx") // 3))
+        think = bool(s.get("think"))
+        reply_room = min(max(s.get("maxTokens"), 8192 if think else 0), max(512, s.get("nCtx") // (2 if think else 3)))
         tokens = s.get("nCtx") - reply_room - len(sys_prompt) / self.CHARS_PER_TOKEN - 300
         budget = int(max(600, tokens * self.CHARS_PER_TOKEN * shrink))
         picked, used, newest_result = [], 0, True
@@ -382,10 +384,11 @@ class App:
     def _chat(self, on_piece, reply):
         """Asks the model, shrinking the history and retrying if it doesn't fit in the context."""
         s = self.settings
-        reply_room = min(s.get("maxTokens"), max(512, s.get("nCtx") // 3))
+        think = bool(s.get("think"))
+        reply_room = min(max(s.get("maxTokens"), 8192 if think else 0), max(512, s.get("nCtx") // (2 if think else 3)))
         for shrink in (1.0, 0.6, 0.35, 0.15):
             try:
-                return self.engine.chat(self._history(shrink), reply_room, s.get("temperature"), on_piece)
+                return self.engine.chat(self._history(shrink), reply_room, s.get("temperature"), on_piece, think)
             except RuntimeError as e:
                 if "context" not in str(e).lower() or shrink == 0.15:
                     raise
@@ -458,6 +461,8 @@ class App:
             navigated = False   # page opened in this reply: element numbers after it were guessed blind
             waiting = False   # a card waits for the user: everything after it depends on it, so stop there
             for a in actions:
+                if a.kind in ("browse", "fetch"):
+                    a = self._fix_url(a)
                 if waiting and not (a.is_browser and not a.browser_read and reply["actions"] and
                                     reply["actions"][-1]["action"]["kind"] in ("batch",) + tools.BROWSER_KINDS):
                     break
@@ -499,6 +504,8 @@ class App:
                     self._set_status(a.label + "…")
                     r = tools.execute_browser(a, self.browser)
                     self._note_block(a, r)
+                    if a.kind in ("search", "browse"):
+                        self.seen_urls = getattr(self, "seen_urls", set()) | set(re.findall(r"https?://[^\s)\]\"'<>]+", r))
                     results.append(r)
                     if a.kind != "scroll":
                         self.done_lookups[key] = True
@@ -686,6 +693,17 @@ class App:
                                                                  "storageTypes": "local_storage,session_storage,indexeddb"})
         except Exception:
             pass
+
+    def _fix_url(self, a: tools.Action) -> tools.Action:
+        """Small models often cut a link short (…/japan/toky). If it's the start of exactly one link we've seen, use that."""
+        seen = getattr(self, "seen_urls", set())
+        url = a.path.strip()
+        if not url or url in seen:
+            return a
+        matches = [u for u in seen if u.startswith(url) and len(u) - len(url) <= 12]
+        if len(matches) == 1:
+            return tools.Action(a.kind, matches[0], a.content, a.extra)
+        return a
 
     @staticmethod
     def _add_to_batch(pa, a: tools.Action):

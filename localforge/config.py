@@ -64,6 +64,7 @@ DEFAULTS = {
     "backend": "auto",     # auto | vulkan | cuda | cpu
     "temperature": 0.4,
     "maxTokens": 2048,
+    "think": False,        # let thinking models reason before answering (slower, needs a bigger reply budget)
     "autoApprove": False,
     "browserAutoApprove": False,
     "hfToken": "",

@@ -200,7 +200,7 @@ class Engine:
                 return line.split("load_tensors:")[-1].strip()
         return ""
 
-    def chat(self, messages: list[dict], max_tokens: int, temperature: float, on_piece) -> str:
+    def chat(self, messages: list[dict], max_tokens: int, temperature: float, on_piece, think: bool = False) -> str:
         """Streams a reply. on_piece(text) gets each new chunk. Returns the whole reply."""
         if not self.loaded:
             raise RuntimeError("No model is loaded")
@@ -209,6 +209,8 @@ class Engine:
         body = json.dumps({
             "messages": messages, "stream": True, "max_tokens": max_tokens, "temperature": temperature,
             "cache_prompt": True, "timings_per_token": False,
+            # Thinking models (Qwen3.x, Gemma 4…) otherwise spend the whole reply budget on hidden reasoning.
+            "chat_template_kwargs": {"enable_thinking": bool(think), "thinking": bool(think)},
         }).encode()
         req = urllib.request.Request(f"http://127.0.0.1:{self.port}/v1/chat/completions", data=body,
                                      headers={"Content-Type": "application/json"})

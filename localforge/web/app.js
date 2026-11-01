@@ -125,6 +125,7 @@ function renderHome() {
           <div class="field"><label>CPU threads (0 = auto)</label><input type="number" min="0" max="256" data-set="threads" value="${s.threads}"></div>
         </div>
         <div style="margin-top:12px" class="stack">
+          <label class="toggle"><input type="checkbox" data-set="think" ${s.think ? "checked" : ""}> Think harder: let reasoning models (Qwen 3.x, Gemma 4) think before answering. Smarter on hard problems, but much slower</label>
           <label class="toggle"><input type="checkbox" data-set="autoApprove" ${s.autoApprove ? "checked" : ""}> Let the AI write files and run code without asking (deletes always ask)</label>
           <div class="field"><label>Hugging Face token (only for gated models) ${s.hfToken ? '<span class="pill ok">saved</span>' : ""}</label>
             <input type="password" placeholder="hf_…" data-set="hfToken"></div>
