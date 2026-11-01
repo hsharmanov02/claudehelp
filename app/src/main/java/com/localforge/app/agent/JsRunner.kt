@@ -13,7 +13,7 @@ import org.json.JSONObject
 /**
  * Runs code inside a hidden WebView (Chrome's V8 engine) — no setup needed.
  * JavaScript runs directly; TypeScript, Lua, Ruby, PHP and C/C++ run through bundled engines
- * (assets/engines/*.js: sucrase, fengari, Opal, Uniter, JSCPP).
+ * (the .js files in assets/engines: sucrase, fengari, Opal, Uniter, JSCPP).
  */
 object JsRunner {
     /** Languages this runner handles, mapped to their engine file (null = plain JavaScript). */
