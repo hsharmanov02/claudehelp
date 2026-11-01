@@ -207,6 +207,9 @@ class Engine:
         self._stop.clear()
         self.last_tps = 0.0
         self.last_finish = ""
+        # Page text cut mid-emoji leaves half a character, which makes the engine reject the whole request.
+        messages = [{**m, "content": m["content"].encode("utf-8", "replace").decode("utf-8")}
+                    if isinstance(m.get("content"), str) else m for m in messages]
         body = json.dumps({
             "messages": messages, "stream": True, "max_tokens": max_tokens, "temperature": temperature,
             "cache_prompt": True, "timings_per_token": False,

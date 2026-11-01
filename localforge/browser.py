@@ -29,7 +29,7 @@ EXTRACT_JS = r"""(q) => {
   const clean = t => (t || '').trim().replace(/\s+/g, ' ');
   const mark = (el, t) => {
     // Up/down shown only by colour, class or icon becomes a visible ▲/▼.
-    if (!/%|^[-+]?[$£€]?[\d.,]+/.test(t) || /^[+\-−▲▼]/.test(t)) return t;
+    if (!/^[$£€]?\s?[\d][\d.,]*\s?(%|[kKmMbB])?$/.test(t)) return t;   // only plain numbers, prices and percents
     const html = el.innerHTML.slice(0, 400);
     const leaf = el.querySelector('span,div,p,b') || el;
     const c = (getComputedStyle(leaf).color.match(/\d+/g) || [0, 0, 0]).map(Number);
@@ -37,7 +37,8 @@ EXTRACT_JS = r"""(q) => {
     if (/(\bup\b|caret-up|pos|gain|increase|green|success|rise)/i.test(html + el.className) || (c[1] > 130 && c[0] < 120)) return '▲' + t;
     return t;
   };
-  const link = el => { const a = [...el.querySelectorAll('a[href]')].find(a => clean(a.innerText).length > 8 && a.href.startsWith('http'));
+  const here = location.href.split('#')[0];
+  const link = el => { const a = [...el.querySelectorAll('a[href]')].find(a => clean(a.innerText).length > 8 && a.href.startsWith('http') && a.href.split('#')[0] !== here);
     return a ? ' -> ' + a.href.slice(0, 160) : ''; };
   const words = clean(q).toLowerCase().split(' ').filter(Boolean);
   const score = el => words.length ? words.filter(w => el.innerText.toLowerCase().includes(w)).length : 0;
@@ -72,7 +73,12 @@ EXTRACT_JS = r"""(q) => {
     g.items.forEach(x => used.add(x));
     const rows = g.items.slice(0, 40).map((it, i) => {
       const texts = []; const w = document.createTreeWalker(it, NodeFilter.SHOW_TEXT); let n;
-      while ((n = w.nextNode())) { const t = clean(n.textContent); if (t && !texts.includes(t) && n.parentElement && vis(n.parentElement)) texts.push(mark(n.parentElement, t)); }
+      while ((n = w.nextNode())) {
+        const t = clean(n.textContent);
+        if (!t || texts.includes(t) || !n.parentElement || !vis(n.parentElement)) continue;
+        if (t.length < 6 && texts.slice(-3).some(x => x.includes(t))) continue;   // "£ | 374 | . | 99" pieces of a price already shown
+        texts.push(mark(n.parentElement, t));
+      }
       return (i + 1) + '. ' + texts.join(' | ').slice(0, 300) + link(it);
     });
     parts.push(`List of ${g.items.length} items${g.items.length > 40 ? ' (first 40 shown)' : ''}:\n` + rows.join('\n'));

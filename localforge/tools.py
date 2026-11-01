@@ -156,6 +156,8 @@ Rules:
 - Your answer must match the run/browser output exactly. Copy numbers and rows from it; never invent results.
   If the output doesn't show what was asked, say so and fix it instead of claiming success.
 - Do any sum, average or percentage in code, never in your head.
+- Sorting, "top N", filtering, sums and averages over web data must be done with <run lang="python"> over the
+  extracted rows (paste the rows into the code). Only use links that appear in the page results.
 - To pull data off a web page, use <extract/> first. Only if that misses something, use <js> with
   document.querySelectorAll (check real class names with a small <js> first). Never retype page text into code.
 - A <js> script's result is its last expression (like the browser console), e.g. end with: data
@@ -177,6 +179,8 @@ Rules:
 
 def parse(raw: str) -> list[Action]:
     reply = strip_thinking(raw)
+    # Forgive small tag typos like <search query="..."] or <browse url="...">
+    reply = re.sub(r'(<(?:search|browse|goto|navigate|fetch|extract|find|list|read|open|mkdir|delete|click|press|scroll)\b[^<>\n]*?")\s*[\]>)]', r"\1/>", reply)
     found = []
     for m in WRITE.finditer(reply):
         found.append((m.start(), Action("write", m.group(1).strip(), m.group(2).rstrip())))

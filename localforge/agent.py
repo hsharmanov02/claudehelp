@@ -19,6 +19,8 @@ FILE_WORDS = re.compile(
     r"on my (pc|computer|laptop)|in my \w+ folder)\b", re.I)
 WIN_PATH = re.compile(r"[A-Za-z]:\\[^\s\"'`<>|*?]*")
 WEB_WORDS = re.compile(r"\b(web|online|internet|browser|browse|website|site|google|url|http|https|www|news|weather|price|prices)\b", re.I)
+DATA_WORDS = re.compile(r"\b(extract|scrape|table|list|top \d+|prices?|cheapest|compare|rank(ed|ing)?|csv|"
+                        r"deals?|stories|results|data|population|market cap|sorted?|how many)\b", re.I)
 PRIVATE = re.compile(r"passw|passwd|creds?\b|credential|secret|token|api.?key|private.?key|seed.?phrase|wallet|\.env\b|\.pem\b|\.kdbx", re.I)
 
 
@@ -497,6 +499,12 @@ class App:
             if len(tools.prose_of(full)) > 350 and actions and all(a.kind in ("click", "type", "press", "scroll", "page")
                                                                   for a in actions):
                 actions = []
+            if not actions and re.search(r"<(search|browse|fetch|extract|click|type|press|scroll|page|js|run|write|read|list|find)\b",
+                                         tools.strip_thinking(full), re.I) and not self.repeats:
+                self.repeats += 1
+                self._msg("tool", "A tool tag in your reply wasn't understood, so nothing was done. "
+                                  "Write it exactly like the examples, e.g. <search query=\"words\"/>.")
+                continue
             if not actions:
                 self._check_claims(reply)
                 if re.search(r"<run\b", full, re.I):
@@ -519,6 +527,8 @@ class App:
                     reply["actions"][-1]["queued"] = [x.to_dict() for x in rest]
                     break
                 key = (a.kind, a.path, a.content)
+                if a.kind in ("extract", "page", "scroll"):
+                    key += (getattr(self.browser, "url", ""),)
                 site = self._site_for(a)
                 if site and site in self.blocked_sites:
                     self.repeats += 1
@@ -556,6 +566,8 @@ class App:
                     self._set_status(a.label + "…")
                     r = tools.execute_browser(a, self.browser)
                     self._note_block(a, r)
+                    if a.kind == "browse" and DATA_WORDS.search(self._last_user_text()) and "[LocalForge note]" not in r:
+                        r += "\n\n" + self._auto_extract()
                     if a.kind in ("search", "browse"):
                         self.seen_urls = getattr(self, "seen_urls", set()) | set(re.findall(r"https?://[^\s)\]\"'<>]+", r))
                     results.append(r)
@@ -574,6 +586,7 @@ class App:
                 if a.is_browser and browser_auto:
                     pa["status"] = "done"
                     r = tools.execute_browser(a, self.browser)
+                    r += self._extract_if_empty(a, r)
                     self._page_changed()
                     self._note_block(a, r)
                     pa["result"] = self._short(r)
@@ -677,6 +690,7 @@ class App:
                     for st in d["steps"]:
                         sa = tools.Action(st["kind"], st["path"], st["content"], st.get("extra", ""))
                         r = tools.execute_browser(sa, self.browser)
+                        r += self._extract_if_empty(sa, r)
                         self._note_js(sa, r)
                         if r.startswith("Browser error"):
                             outs.append(f"{sa.label}: {r}")
@@ -691,6 +705,7 @@ class App:
                     self._page_changed()
                 elif a.is_browser:
                     r = tools.execute_browser(a, self.browser)
+                    r += self._extract_if_empty(a, r)
                     self._note_block(a, r)
                     self._page_changed()
                     pa["result"] = self._short(r)
@@ -777,8 +792,18 @@ class App:
                         r"(saved|written|created) (it |the file |the csv |successfully)|tests? (all )?pass", re.I)
 
     def _check_claims(self, reply):
-        """Warns the user when the answer claims success that no tool output in this request shows."""
-        if not self.CLAIMS.search(tools.prose_of(reply["text"])):
+        """Warns the user when the answer claims success that no tool output in this request shows,
+        or gives links that never appeared in any page or result."""
+        prose = tools.prose_of(reply["text"])
+        links = set(re.findall(r"https?://[^\s)\]\"'<>|*]+", prose))
+        if links:
+            seen_text = " ".join(m["text"] + " " + (m.get("modelText") or "") for m in self.messages
+                                 if m["role"] in ("tool", "run", "user"))
+            made_up = [u for u in links if u.rstrip(".,;:") not in seen_text]
+            if made_up:
+                self._msg("note", "⚠ These links didn't appear in any page LocalForge opened, so they may be made up: "
+                                  + ", ".join(sorted(made_up)[:5]))
+        if not self.CLAIMS.search(prose):
             return
         since = []
         for m in reversed(self.messages):
@@ -787,7 +812,8 @@ class App:
             if m["role"] in ("run", "tool"):
                 since.append(m)
         ok_run = any(m["role"] == "run" and m["text"].startswith("✓") for m in since)
-        ok_tool = any(m["role"] == "tool" and re.match(r"(Saved|Created|Typed and submitted|Did \d+ of)", m["text"]) for m in since)
+        ok_tool = any(m["role"] == "tool" and re.match(r"(Saved|Created|Typed and submitted|Did \d+ of|Browser page|Clicked|"
+                                                        r"Data |Fetched|Script result|Pressed)", m["text"]) for m in since)
         last = since[0] if since else None
         failed_last = last is not None and (last["text"].startswith("✗") or "error" in last["text"][:200].lower())
         if (not ok_run and not ok_tool) or failed_last:
@@ -801,6 +827,25 @@ class App:
             pa["action"] = d = {"kind": "batch", "path": "", "content": "", "extra": "", "steps": [d], "label": ""}
         d["steps"].append(a.to_dict())
         d["label"] = f"Do {len(d['steps'])} browser steps: " + "; ".join(st["label"] for st in d["steps"])[:300]
+
+    def _extract_if_empty(self, a: tools.Action, r: str) -> str:
+        """A <js> extractor that came back empty or broken: show the page's data the easy way."""
+        if a.kind == "js" and (r.startswith("Browser error") or "returned nothing" in r[:80]
+                               or re.search(r"^Script result:\s*(\[\s*\]|null|\{\s*\})", r) or r.count("null") > 5):
+            ex = self._auto_extract()
+            return ("\n\nYour script didn't get the data. Here it is extracted for you:\n" + ex) if ex else ""
+        return ""
+
+    def _auto_extract(self) -> str:
+        try:
+            ex = self.browser.extract(self._last_user_text()[:120])
+        except Exception:
+            return ""
+        if ex.startswith("No tables"):
+            return ""
+        self.done_lookups[("extract", "", "", getattr(self.browser, "url", ""))] = True
+        return ("Data extracted from this page automatically (tables/lists as rows; ▲/▼ = up/down shown by colour). "
+                "Use these rows; sort, filter or total them with <run lang=\"python\">:\n" + ex)
 
     def _note_js(self, a: tools.Action, result: str):
         if a.kind == "js" and (result.startswith("Browser error") or "returned nothing" in result[:80]
