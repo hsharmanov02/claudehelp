@@ -7,9 +7,6 @@ on:
 permissions:
   contents: write
 
-env:
-  LLAMA_TAG: b12025
-
 jobs:
   build:
     runs-on: windows-latest
@@ -29,17 +26,27 @@ jobs:
       - name: Unit tests
         run: python -m pytest -q tests
 
-      - name: Fetch llama.cpp engines (${{ env.LLAMA_TAG }}) - CPU and Vulkan (any GPU)
+      - name: Fetch newest llama.cpp engines - CPU and Vulkan (any GPU)
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           New-Item -ItemType Directory -Force dl | Out-Null
-          gh release download $env:LLAMA_TAG -R ggml-org/llama.cpp -D dl -p "*bin-win-cpu-x64.zip" -p "*bin-win-vulkan-x64.zip"
+          # Newest llama.cpp release that has both Windows builds.
+          $tags = gh release list -R ggml-org/llama.cpp -L 15 --exclude-drafts --exclude-pre-releases --json tagName -q ".[].tagName"
+          $got = $null
+          foreach ($t in $tags) {
+            Remove-Item dl\* -Force -ErrorAction SilentlyContinue
+            gh release download $t -R ggml-org/llama.cpp -D dl -p "*bin-win-cpu-x64.zip" -p "*bin-win-vulkan-x64.zip" 2>$null
+            if ((Get-ChildItem dl -Filter "*.zip").Count -ge 2) { $got = $t; break }
+          }
+          if (-not $got) { throw "No llama.cpp release with Windows CPU + Vulkan builds found" }
+          Write-Host "Using llama.cpp $got"
+          $got | Out-File engines-version.txt
           Get-ChildItem dl
           foreach ($kind in @("cpu", "vulkan")) {
             $zip = Get-ChildItem dl -Filter "*bin-win-$kind-x64.zip" | Select-Object -First 1
-            if (-not $zip) { throw "llama.cpp $kind build not found in release $env:LLAMA_TAG" }
+            if (-not $zip) { throw "llama.cpp $kind build not found" }
             $tmp = "dl\x-$kind"
             Expand-Archive $zip.FullName -DestinationPath $tmp -Force
             $server = Get-ChildItem $tmp -Recurse -Filter "llama-server.exe" | Select-Object -First 1
@@ -57,6 +64,7 @@ jobs:
         run: |
           Copy-Item engines "dist\LocalForge\engines" -Recurse -Force
           Copy-Item README.md "dist\LocalForge\README.txt"
+          Copy-Item engines-version.txt "dist\LocalForge\engines\llama.cpp-version.txt"
 
       - name: Self-test (real tiny uncensored model, CPU engine, code runners)
         shell: pwsh
