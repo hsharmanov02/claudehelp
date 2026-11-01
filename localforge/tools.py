@@ -145,6 +145,12 @@ Rules:
 - Answer exactly what the user asked. Don't drift into other tasks or guess what files contain.
 - Never put a number into code before you have fetched it. Get the data first, then run the maths in code.
 - When the user asks for SQL, write plain SQL in <run lang="sql"> (built-in SQLite), not Python.
+  SQLite syntax only: strftime('%Y-%m', col) for months, no FORMAT(), no [brackets], no TOP (use LIMIT).
+  Window functions can't go in WHERE: compute them in a CTE, then filter in the outer query.
+  "Per customer per month" means SUM by customer and month first, then rank those sums.
+- Your answer must match the run/browser output exactly. Copy numbers and rows from it; never invent results.
+  If the output doesn't show what was asked, say so and fix it instead of claiming success.
+- Do any sum, average or percentage in code, never in your head.
 - Before your final answer, check the output against EVERY part of the question. If a part is missing or wrong, fix it.
   Never claim something worked or was saved unless the output shows it.
 - Include rows with no matches when asked (LEFT JOIN + COALESCE), and check totals add up.
@@ -202,7 +208,8 @@ def parse(raw: str) -> list[Action]:
     found.sort(key=lambda x: x[0])
     out = []
     for _, a in found:
-        if a not in out:
+        # Repeated clicks/typing in one reply are real steps (e.g. type, Add, type, Add): keep them.
+        if a.kind in ("click", "type", "press", "scroll", "js") or a not in out:
             out.append(a)
     return out
 
