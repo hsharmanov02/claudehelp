@@ -144,7 +144,9 @@ Rules:
 - <write> must contain the entire file, never a partial snippet.
 - Answer exactly what the user asked. Don't drift into other tasks or guess what files contain.
 - Never put a number into code before you have fetched it. Get the data first, then run the maths in code.
-- For SQL questions use <run lang="sql"> (built-in SQLite). If you use Python's sqlite3, call conn.commit().
+- When the user asks for SQL, write plain SQL in <run lang="sql"> (built-in SQLite), not Python.
+- Before your final answer, check the output against EVERY part of the question. If a part is missing or wrong, fix it.
+  Never claim something worked or was saved unless the output shows it.
 - Include rows with no matches when asked (LEFT JOIN + COALESCE), and check totals add up.
 - When a test fails, first check whether your expected values are wrong before changing working code.
 - If code fails, change it before running again. Never run the exact same code twice.

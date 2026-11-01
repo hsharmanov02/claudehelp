@@ -118,10 +118,10 @@ def _kill_tree(p: subprocess.Popen):
         pass
 
 
-def _exec(cmd, cwd: Path, timeout: int, lang: str, shell=False) -> RunResult:
+def _exec(cmd, cwd: Path, timeout: int, lang: str, shell=False, env=None) -> RunResult:
     try:
         p = subprocess.Popen(cmd, cwd=str(cwd), stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                             stdin=subprocess.DEVNULL, creationflags=NO_WINDOW, shell=shell)
+                             stdin=subprocess.DEVNULL, creationflags=NO_WINDOW, shell=shell, env=env)
     except FileNotFoundError:
         return RunResult(lang, False, False, f"{lang} isn't installed on this PC.")
     try:
@@ -152,8 +152,13 @@ def _python(code: str, wd: Path) -> RunResult:
     script.write_text(code, encoding="utf-8")
     py = system_python()
     if py:
+        # sitecustomize makes sqlite3 save every change right away (models often forget conn.commit()).
+        site = d / "site"
+        site.mkdir(exist_ok=True)
+        (site / "sitecustomize.py").write_text(SQLITE_AUTOCOMMIT, encoding="utf-8")
+        env = dict(os.environ, PYTHONPATH=str(site) + os.pathsep + os.environ.get("PYTHONPATH", ""))
         cmd = [py, "-X", "utf8", str(script)] if not py.lower().endswith("py.exe") else [py, "-3", "-X", "utf8", str(script)]
-        env_r = _exec(cmd, wd, TIMEOUT, "python")
+        env_r = _exec(cmd, wd, TIMEOUT, "python", env=env)
         return env_r
     # Bundled Python: the program itself runs the script and writes the output to a file.
     out_file = d / "output.txt"
@@ -170,6 +175,19 @@ def _python(code: str, wd: Path) -> RunResult:
     return RunResult("python", ok, r.timed_out, _trim(text).strip() or "(no output)")
 
 
+SQLITE_AUTOCOMMIT = """
+try:
+    import sqlite3 as _lf_sqlite
+    _lf_connect = _lf_sqlite.connect
+    def _lf_autocommit(*a, **k):
+        k.setdefault("isolation_level", None)
+        return _lf_connect(*a, **k)
+    _lf_sqlite.connect = _lf_autocommit
+except Exception:
+    pass
+"""
+
+
 def run_python_inline(script: str, out_file: str) -> int:
     """Entry point for the bundled Python (LocalForge.exe --run-python script out)."""
     import runpy
@@ -179,6 +197,7 @@ def run_python_inline(script: str, out_file: str) -> int:
     sys.stdin = io.StringIO("")
     sys.argv = [script]
     sys.path.insert(0, str(Path(script).parent))
+    exec(SQLITE_AUTOCOMMIT, {})
     code = 0
     try:
         runpy.run_path(script, run_name="__main__")
