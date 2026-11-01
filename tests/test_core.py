@@ -59,3 +59,9 @@ def test_browser_tags():
     assert [a.kind for a in acts] == ["search", "browse", "click", "type", "js"]
     assert acts[0].browser_read and acts[1].browser_read and not acts[2].browser_read
     assert acts[3].extra == "submit" and acts[3].content == "hi"
+
+
+def test_fetch_tag_and_js_lang():
+    acts = tools.parse('<fetch url="https://x.com/a.json"/>')
+    assert acts[0].kind == "fetch" and acts[0].browser_read
+    assert runner.normalize("js") == "javascript" and runner.normalize("nodejs") == "node"

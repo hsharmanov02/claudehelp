@@ -57,6 +57,7 @@ def tools() -> dict:
     """Which languages work on this PC right now, and how."""
     t = {
         "python": system_python() or "built in",
+        "javascript": "built in (runs in the LocalForge browser)",
         "sql": "built in (SQLite)",
         "html": "built in (preview)",
     }
@@ -66,7 +67,7 @@ def tools() -> dict:
     else:
         t["shell"] = "sh"
     opt = {
-        "javascript": _which("node"), "typescript": _which("deno", "bun") or (_which("npx") and "npx tsx"),
+        "node": _which("node"), "typescript": _which("deno", "bun") or (_which("npx") and "npx tsx"),
         "bash": _which("bash"), "c": _which("gcc", "clang", "cl"), "cpp": _which("g++", "clang++", "cl"),
         "java": _which("java"), "go": _which("go"), "rust": _which("rustc"), "ruby": _which("ruby"),
         "php": _which("php"), "lua": _which("lua", "lua54", "luajit"), "perl": _which("perl"),
@@ -80,7 +81,7 @@ def normalize(lang: str | None) -> str:
     l = (lang or "").strip().lower()
     table = {
         "": "python", "py": "python", "python3": "python", "py3": "python",
-        "js": "javascript", "jsx": "javascript", "mjs": "javascript", "node": "javascript", "nodejs": "javascript",
+        "js": "javascript", "jsx": "javascript", "mjs": "javascript", "nodejs": "node", "cjs": "node",
         "ts": "typescript", "tsx": "typescript",
         "htm": "html", "xhtml": "html", "web": "html",
         "sqlite": "sql", "sqlite3": "sql",
@@ -97,7 +98,7 @@ def normalize(lang: str | None) -> str:
 
 
 RUNNABLE_FENCES = {"python", "py", "python3", "sh", "bash", "shell", "powershell", "ps1", "pwsh", "bat", "cmd", "batch",
-                   "js", "javascript", "node", "ts", "typescript", "html", "sql", "sqlite", "c", "cpp", "c++", "java",
+                   "js", "javascript", "node", "nodejs", "ts", "typescript", "html", "sql", "sqlite", "c", "cpp", "c++", "java",
                    "kotlin", "kt", "go", "golang", "rust", "rs", "ruby", "rb", "php", "lua", "perl"}
 
 
@@ -232,7 +233,7 @@ def _split_sql(code: str):
 
 SPECS = {
     # lang: (file name, command builder, compile?)
-    "javascript": ("main.js", lambda t, f: [t, f], False),
+    "node": ("main.js", lambda t, f: [t, f], False),
     "bash": ("main.sh", lambda t, f: [t, f], False),
     "shell": ("main.sh", lambda t, f: ["sh", f], False),
     "ruby": ("main.rb", lambda t, f: [t, f], False),

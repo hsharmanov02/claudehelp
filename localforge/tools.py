@@ -31,7 +31,7 @@ class Action:
     @property
     def browser_read(self) -> bool:
         """Browser actions that only look (run without asking)."""
-        return self.kind in ("search", "browse", "page", "scroll")
+        return self.kind in ("search", "browse", "page", "scroll", "fetch")
 
     @property
     def label(self) -> str:
@@ -40,7 +40,7 @@ class Action:
             "write": f"Write {len(self.content)} chars to {self.path}", "mkdir": f"Create folder {self.path}",
             "delete": f"Delete {self.path}", "open": f"Open {self.path}",
             "run": f"Run {self.path} code ({len(self.content.splitlines())} lines)",
-            "search": f'Search the web for "{self.path}"', "browse": f"Open {self.path} in the browser",
+            "search": f'Search the web for "{self.path}"', "fetch": f"Fetch {self.path} through the browser", "browse": f"Open {self.path} in the browser",
             "page": "Read the browser page", "scroll": f"Scroll the page {self.path}",
             "click": f"Click [{self.path}] in the browser", "press": f"Press {self.path} in the browser",
             "type": f'Type "{self.content[:60]}" into [{self.path}]' + (" and submit" if self.extra == "submit" else ""),
@@ -51,7 +51,7 @@ class Action:
         return {"kind": self.kind, "path": self.path, "content": self.content, "extra": self.extra, "label": self.label}
 
 
-BROWSER_KINDS = ("search", "browse", "page", "scroll", "click", "type", "press", "js")
+BROWSER_KINDS = ("search", "browse", "page", "scroll", "click", "type", "press", "js", "fetch")
 
 
 THINK = re.compile(r"<think>[\s\S]*?(</think>|$)", re.I)
@@ -61,6 +61,7 @@ WRITE = re.compile(r'<write\s+path\s*=\s*"([^"]+)"\s*>\r?\n?([\s\S]*?)</write>',
 RUN = re.compile(r'<run(?:\s+lang(?:uage)?\s*=\s*"([^"]*)")?\s*>\r?\n?([\s\S]*?)(</run>|$)', re.I)
 B_SEARCH = re.compile(r'<search\s+(?:query|q)\s*=\s*"([^"]+)"\s*/?>', re.I)
 B_BROWSE = re.compile(r'<(?:browse|goto|navigate)\s+(?:url|href)\s*=\s*"([^"]+)"\s*/?>', re.I)
+B_FETCH = re.compile(r'<fetch\s+(?:url|href)\s*=\s*"([^"]+)"\s*/?>', re.I)
 B_PAGE = re.compile(r'<page\s*/?>', re.I)
 B_SCROLL = re.compile(r'<scroll(?:\s+(?:dir|direction)\s*=\s*"([^"]*)")?\s*/?>', re.I)
 B_CLICK = re.compile(r'<click\s+(?:n|id|element)\s*=\s*"?(\d+)"?\s*/?>', re.I)
@@ -90,7 +91,11 @@ print(sum(range(10)))
 </run>
 The output (or the error) is sent back to you. Read it, fix any errors and run again until it works, then tell the user the result.
 Never tell the user to open a terminal or run code themselves. You run it.
-Code runs in the folder {work}. No input(), no GUI windows. For html, the page is shown to the user. For sql, a SQLite database is used.
+Code runs in the folder {work}. No input(), no GUI windows. For sql, a SQLite database is used.
+javascript runs INSIDE YOUR BROWSER (full DOM, console.log output and errors come back to you; await works at top level).
+html opens IN YOUR BROWSER: you get the page text, its buttons/inputs as numbered elements, and every console error.
+Then TEST IT: use <click n="..."/>, <type n="...">...</type> and <js>return ...</js> on the page, read the result, fix bugs and run again until it really works.
+Use node only for scripts that need files or Node modules (only if node is in the list above).
 
 YOU HAVE ACCESS TO THE FILES ON THIS PC. Never say you can't see their files - use these tags:
 <find query="cv pdf"/>                       search the WHOLE PC by name or type (photos, pdf, music, exe, code...)
@@ -107,6 +112,7 @@ complete new file content here
 YOU HAVE YOUR OWN WEB BROWSER (the user watches it live in the Browser tab and stays logged in to sites there).
 <search query="best budget gpu 2026"/>        search the web; you get titles, links and snippets
 <browse url="https://example.com"/>           open a page; you get its text and numbered clickable/fillable elements
+<fetch url="https://api.example.com/data.json"/>   get raw data (JSON, CSV, text, APIs) through the browser, logged in as the user
 <page/>                                       read the current page again
 <click n="12"/>                               click element [12]
 <type n="5">text to enter</type>              fill input [5]; add submit="true" to press Enter after
@@ -114,6 +120,7 @@ YOU HAVE YOUR OWN WEB BROWSER (the user watches it live in the Browser tab and s
 <scroll dir="down"/>                          scroll down (or up) and read what is visible
 <js>return document.querySelectorAll('tr').length</js>   run JavaScript on the page to read or change its data
 Use the browser for anything current or online (news, prices, weather, docs, accounts the user is logged in to).
+To get data into code: <fetch> it first, then put the values into your python/javascript, or scrape the open page with <js>.
 
 Rules:
 - Always use full paths.
@@ -148,6 +155,8 @@ def parse(raw: str) -> list[Action]:
         found.append((m.start(), Action("search", m.group(1).strip())))
     for m in B_BROWSE.finditer(reply):
         found.append((m.start(), Action("browse", m.group(1).strip())))
+    for m in B_FETCH.finditer(reply):
+        found.append((m.start(), Action("fetch", m.group(1).strip())))
     for m in B_PAGE.finditer(reply):
         found.append((m.start(), Action("page", "")))
     for m in B_SCROLL.finditer(reply):
@@ -262,6 +271,8 @@ def execute_browser(a: Action, browser) -> str:
             return browser.describe()
         if a.kind == "page":
             return browser.describe()
+        if a.kind == "fetch":
+            return browser.fetch_raw(a.path)
         if a.kind == "scroll":
             browser.ensure()
             browser.eval("window.scrollBy(0, %d)" % (-int(browser.height * 0.8) if a.path.startswith("up") else int(browser.height * 0.8)))

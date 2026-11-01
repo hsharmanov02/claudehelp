@@ -38,7 +38,8 @@ class App:
         self.running_code = False
         self.loading = False
         self.status = None            # one-line engine / app status
-        self.preview = None           # html page to show
+        self.preview = None           # html page to show (only when the browser isn't available)
+        self.browser_focus = 0        # bumps when code ran in the browser, so the UI can show it
         self.steps_left = 0
         self.search_state = {"query": "", "results": [], "busy": False, "error": None}
         self.repo_state = {"repo": None, "files": [], "busy": False, "error": None}
@@ -80,6 +81,7 @@ class App:
             "recs": self.recs,
             "tools": runner.tools(),
             "browser": self.browser.state(),
+            "browserFocus": self.browser_focus,
             "index": {"ready": self.index.ready, "building": self.index.building, "count": len(self.index.entries)},
             "workDir": str(config.work_dir()),
             "modelsDir": str(self.store.dir),
@@ -432,16 +434,44 @@ class App:
         self.running_code = True
         self.touch()
         try:
-            r = runner.run(a.path, a.content)
+            r = self._run_in_browser(a) if a.path in ("javascript", "html") else None
+            if r is None:
+                r = runner.run(a.path, a.content)
         finally:
             self.running_code = False
         out["text"] = ("✓ " if r.ok else "⏱ " if r.timed_out else "✗ ") + f"{r.lang}\n{r.output}"
         out["modelText"] = r.for_model()
         if r.preview:
             self.preview = r.preview
+        if a.path in ("javascript", "html") and r.lang.endswith("(browser)"):
+            self.browser_focus += 1
         if pa is not None:
             pa["result"] = "Ran successfully" if r.ok else "Stopped: took too long" if r.timed_out else "Failed - see output"
         self.touch()
+
+    def _run_in_browser(self, a: tools.Action):
+        """javascript and html run inside LocalForge's own browser so the model can see and test the result."""
+        try:
+            self.browser.ensure()
+        except Exception as e:
+            if a.path == "javascript" and runner.tools().get("node"):
+                return runner.run("node", a.content)
+            if a.path == "html":
+                return None    # falls back to the in-app preview
+            return runner.RunResult("javascript", False, False, f"The browser isn't available ({e}).")
+        if a.path == "javascript":
+            ok, out = self.browser.run_code(a.content)
+            return runner.RunResult("javascript (browser)", ok, False, runner._trim(out))
+        d = config.work_dir() / "pages"
+        d.mkdir(parents=True, exist_ok=True)
+        m = re.search(r"<title>(.*?)</title>", a.content, re.I | re.S)
+        name = re.sub(r"[^A-Za-z0-9_-]+", "-", (m.group(1) if m else "page").strip())[:40].strip("-") or "page"
+        f = d / f"{name}-{int(time.time())}.html"
+        f.write_text(a.content, encoding="utf-8")
+        report = self.browser.open_page(str(f))
+        ok = "[error]" not in report and "Uncaught" not in report
+        return runner.RunResult("html (browser)", ok, False,
+                                f"Saved {f} and opened it in the browser.\n\n" + runner._trim(report))
 
     def _find_action(self, msg_id: int, idx: int):
         for m in self.messages:

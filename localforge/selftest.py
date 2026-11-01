@@ -76,6 +76,10 @@ def run() -> int:
             b.click_element(2)
             title = b.run_js("return document.title")
             assert title == "clicked forge", title
+            ok, out = b.run_code("console.log([1, 2, 3].map(x => x * 2)); return 'done'")
+            assert ok and "[2, 4, 6]" in out and "done" in out, out
+            ok, out = b.run_code("undefinedThing()")
+            assert not ok and "undefinedThing" in out, out
             b.navigate("https://example.com")
             text = b.snapshot()["text"]
             assert "domain" in text.lower(), text[:200]

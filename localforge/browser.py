@@ -71,6 +71,30 @@ KEYS = {
 }
 
 
+def _fmt_remote(a: dict) -> str:
+    """Turns a console.log argument into readable text, e.g. [2, 4, 6] or {name: "x", price: 42}."""
+    if "value" in a:
+        v = a["value"]
+        return v if isinstance(v, str) else json.dumps(v)
+    if "unserializableValue" in a:
+        return a["unserializableValue"]
+    pv = a.get("preview")
+    if pv and pv.get("properties") is not None:
+        def val(pr):
+            if pr.get("type") == "string":
+                return json.dumps(pr.get("value", ""))
+            return str(pr.get("value", pr.get("type")))
+        props = pv["properties"]
+        more = ", …" if pv.get("overflow") else ""
+        if pv.get("subtype") == "array":
+            return "[" + ", ".join(val(x) for x in props) + more + "]"
+        if pv.get("subtype") in ("map", "set") and pv.get("entries"):
+            return pv.get("description", "") + " {" + ", ".join(
+                (val(e["key"]) + " => " if e.get("key") else "") + val(e["value"]) for e in pv["entries"]) + more + "}"
+        return "{" + ", ".join(f"{x.get('name')}: {val(x)}" for x in props) + more + "}"
+    return str(a.get("description", a.get("type", "")))
+
+
 def find_browser() -> str | None:
     env = os.environ.get("LOCALFORGE_BROWSER")
     if env and Path(env).is_file():
@@ -112,6 +136,10 @@ class Browser:
         self._start_lock = threading.Lock()
         self.profile = config.data_dir() / "browser-profile"
         self.width, self.height = WIDTH, HEIGHT
+        import collections
+        self.console = collections.deque(maxlen=300)   # (seq, level, text) since the last page load
+        self.console_seq = 0
+        self.sandbox_url = None      # set by the app: a blank page served by LocalForge for running code
         import atexit
         atexit.register(self.close)
 
@@ -205,6 +233,10 @@ class Browser:
         threading.Thread(target=self._reader, daemon=True).start()
         self.send("Page.enable")
         self.send("Runtime.enable")
+        try:
+            self.send("Log.enable")
+        except Exception:
+            pass
         self.send("Page.addScriptToEvaluateOnNewDocument", {"source": INIT_SCRIPT})
         self.send("Emulation.setDeviceMetricsOverride", {"width": self.width, "height": self.height,
                                                          "deviceScaleFactor": 1, "mobile": False})
@@ -286,7 +318,20 @@ class Browser:
             f = p.get("frame") or {}
             if not f.get("parentId"):
                 self.url = f.get("url", "")
+                self.console.clear()
                 self.on_change()
+        elif method == "Runtime.consoleAPICalled":
+            parts = [_fmt_remote(a) for a in p.get("args") or []]
+            self._log(p.get("type", "log"), " ".join(parts))
+        elif method == "Runtime.exceptionThrown":
+            d = p.get("exceptionDetails") or {}
+            ex = d.get("exception") or {}
+            where = f" (line {d.get('lineNumber', 0) + 1})" if "lineNumber" in d else ""
+            self._log("error", "Uncaught " + (ex.get("description") or d.get("text") or "error") + where)
+        elif method == "Log.entryAdded":
+            e = p.get("entry") or {}
+            if e.get("level") in ("error", "warning"):
+                self._log(e["level"], f"{e.get('text', '')} {e.get('url', '')}".strip())
         elif method == "Page.loadEventFired":
             self.loading = False
             threading.Thread(target=self._refresh_title, daemon=True).start()
@@ -295,6 +340,15 @@ class Browser:
             self.on_change()
         elif method == "Page.javascriptDialogOpening":
             threading.Thread(target=lambda: self.send("Page.handleJavaScriptDialog", {"accept": True}), daemon=True).start()
+
+    def _log(self, level, text):
+        self.console_seq += 1
+        self.console.append((self.console_seq, level, text[:1000]))
+
+    def console_text(self, since=0, only_problems=False, limit=60) -> str:
+        rows = [(lv, t) for (sq, lv, t) in list(self.console) if sq > since and (not only_problems or lv in ("error", "warning", "assert"))]
+        rows = rows[-limit:]
+        return "\n".join(f"[{lv}] {t}" for lv, t in rows)
 
     def _refresh_title(self):
         try:
@@ -417,11 +471,13 @@ class Browser:
             data["text"] = data["text"][:max_text] + "\n…[page text cut — scroll or ask for more]"
         return data
 
-    def describe(self, max_text=7000) -> str:
+    def describe(self, max_text=7000, console=True) -> str:
         d = self.snapshot(max_text)
         els = "\n".join(d["elements"][:120])
+        problems = self.console_text(only_problems=True, limit=15) if console else ""
         return (f"Browser page: {d['title']}\nURL: {d['url']}\n\nPage text:\n{d['text'] or '(empty)'}\n\n"
-                f"Clickable / fillable elements (use their numbers):\n{els or '(none)'}")
+                f"Clickable / fillable elements (use their numbers):\n{els or '(none)'}"
+                + (f"\n\nConsole errors/warnings on this page:\n{problems}" if problems else ""))
 
     def _center(self, n: int):
         r = self.eval(f"""(() => {{ const el = document.querySelector('[data-lf-id="{int(n)}"]');
@@ -464,6 +520,51 @@ class Browser:
         if v is None:
             return "(script ran, returned nothing)"
         return v if isinstance(v, str) else json.dumps(v, indent=1)[:8000]
+
+    def run_code(self, code: str, timeout=60):
+        """Runs JavaScript on LocalForge's blank code page in the browser. Returns (ok, output)."""
+        self.ensure()
+        if self.sandbox_url and not self.url.startswith(self.sandbox_url):
+            self.navigate(self.sandbox_url)
+        mark = self.console_seq
+        wrapped = "(async () => {\n" + code + "\n})()"
+        ok = True
+        try:
+            v = self.eval(wrapped, timeout)
+        except Exception as e:
+            ok, v = False, None
+            err = str(e)
+        time.sleep(0.3)   # let late console calls and timers flush
+        out = self.console_text(since=mark, limit=200)
+        if not ok:
+            out = (out + "\n" if out else "") + "Error: " + err
+        elif v is not None:
+            out = (out + "\n" if out else "") + "Returned: " + (v if isinstance(v, str) else json.dumps(v))
+        if any(lv == "error" for (sq, lv, _) in list(self.console) if sq > mark):
+            ok = False
+        # Show the output on the page too, so the user sees it in the Browser tab.
+        try:
+            self.eval("window.__lfShow && window.__lfShow(" + json.dumps(out[-20000:] or "(no output)") + ", " + ("true" if ok else "false") + ")", 5)
+        except Exception:
+            pass
+        return ok, out or "(no output)"
+
+    def open_page(self, path_or_url: str, settle=1.5) -> str:
+        """Opens a page (HTML file or URL), waits for scripts to run and reports text, elements and console."""
+        p = Path(path_or_url)
+        url = p.resolve().as_uri() if p.exists() else path_or_url
+        self.navigate(url)
+        time.sleep(settle)
+        logs = self.console_text(limit=40)
+        return self.describe(5000, console=False) + (f"\n\nConsole output:\n{logs}" if logs else "\n\nConsole: no output, no errors.")
+
+    def fetch_raw(self, url: str, max_chars=15000) -> str:
+        """Loads a URL in the browser (with the user's cookies/logins) and returns its raw text, e.g. JSON or CSV."""
+        self.navigate(url)
+        txt = self.eval("document.contentType + '\\n' + (document.body ? (document.querySelector('pre') && document.body.children.length === 1 ? document.querySelector('pre').innerText : document.body.innerText) : '')") or ""
+        ctype, _, body = txt.partition("\n")
+        cut = len(body) > max_chars
+        return f"Fetched {self.url} ({ctype}, {len(body)} chars{', cut' if cut else ''}):\n{body[:max_chars]}"
 
     def search(self, query: str) -> str:
         self.navigate("https://html.duckduckgo.com/html/?q=" + urllib.parse.quote(query))

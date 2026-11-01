@@ -39,6 +39,7 @@ def main(argv=None):
 
     httpd = server.serve(app, args.port, pick_file)
     url = f"http://127.0.0.1:{httpd.server_address[1]}/"
+    app.browser.sandbox_url = url + "sandbox"
     print(f"LocalForge is running at {url}", flush=True)
 
     if args.no_open:

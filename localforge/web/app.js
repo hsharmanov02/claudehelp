@@ -66,6 +66,8 @@ function render() {
   $("#send").classList.toggle("hidden", S.generating);
   $("#stop").classList.toggle("hidden", !S.generating);
   if (S.preview && $("#modal").dataset.preview !== S.preview) showPreview(S.preview);
+  if (window._bf !== undefined && S.browserFocus > window._bf && tab !== "browser") toast("Ran in the browser. Open the Browser tab to see it.");
+  window._bf = S.browserFocus;
   if (tab === "home") renderHome();
   if (tab === "models") renderModels();
   if (tab === "browser") renderBrowser();
@@ -287,7 +289,7 @@ function renderMsg(m, isLast) {
     const web = /^(Browser|Web search|Clicked|Typed|Pressed|Scrolled|Script result)/.test(first);
     body = `<details><summary>${web ? "🌐 " : ""}${esc(first.slice(0, 140))}</summary>${esc(m.text)}</details>${web ? '<button class="small ghost" data-go="browser" style="margin-top:6px">View in Browser →</button>' : ""}`;
   } else if (m.role === "user") body = md(m.text);
-  else body = esc(m.text);
+  else body = esc(m.text) + (m.role === "run" && /^[✓✗⏱] (javascript|html) \(browser\)/.test(m.text) ? '<div><button class="small ghost" data-go="browser" style="margin-top:6px">View in Browser →</button></div>' : "");
   const actions = (m.actions || []).map((a, i) => {
     const act = a.action;
     const preview = act.kind === "write" || act.kind === "run" ? `<pre class="mono">${esc(act.content)}</pre>` : "";

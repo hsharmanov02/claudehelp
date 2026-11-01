@@ -13,6 +13,16 @@ from pathlib import Path
 from . import config, tools
 
 TOKEN = secrets.token_urlsafe(24)
+
+# Blank page the AI's JavaScript runs on (inside LocalForge's browser). It has no access to the app's API.
+SANDBOX = """<!doctype html><html><head><meta charset="utf-8"><title>LocalForge code runner</title>
+<style>body{margin:0;font:14px/1.5 Consolas,ui-monospace,monospace;background:#0f1115;color:#e6e8ee}
+header{padding:12px 18px;background:#171a21;border-bottom:1px solid #2a2f3a;font-family:Segoe UI,sans-serif}
+#st{float:right}.ok{color:#3ecf8e}.bad{color:#ef5b5b}pre{margin:0;padding:16px 18px;white-space:pre-wrap}
+#app{padding:0 18px}</style></head><body><header><b>LocalForge code runner</b> <span id=st></span></header>
+<pre id=out>Waiting for code...</pre><div id=app></div>
+<script>window.__lfShow=function(t,ok){document.getElementById('out').textContent=t;
+var s=document.getElementById('st');s.textContent=ok?'ran OK':'failed';s.className=ok?'ok':'bad';};</script></body></html>"""
 MAX_EDIT = 2 * 1024 * 1024
 
 
@@ -48,6 +58,8 @@ def make_handler(app, pick_file=None):
             if u.path in ("/", "/index.html"):
                 html = (web / "index.html").read_text(encoding="utf-8").replace("__LF_TOKEN__", TOKEN)
                 return self._send(200, html.encode("utf-8"), "text/html; charset=utf-8")
+            if u.path == "/sandbox":
+                return self._send(200, SANDBOX.encode("utf-8"), "text/html; charset=utf-8")
             if u.path.startswith("/static/"):
                 f = (web / u.path[len("/static/"):]).resolve()
                 if web.resolve() in f.parents and f.is_file():
