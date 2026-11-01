@@ -142,6 +142,12 @@ Rules:
 - If results are already given to you under [PC files], answer from them directly.
 - Only write, create, open or delete files when the user asks for it.
 - <write> must contain the entire file, never a partial snippet.
+- Answer exactly what the user asked. Don't drift into other tasks or guess what files contain.
+- Never put a number into code before you have fetched it. Get the data first, then run the maths in code.
+- For SQL questions use <run lang="sql"> (built-in SQLite). If you use Python's sqlite3, call conn.commit().
+- Include rows with no matches when asked (LEFT JOIN + COALESCE), and check totals add up.
+- When a test fails, first check whether your expected values are wrong before changing working code.
+- If code fails, change it before running again. Never run the exact same code twice.
 - Never repeat the same search or open the same page twice. Two or three lookups are usually enough: then answer.
 - Once your code runs and one test confirms it works, stop testing and tell the user the result.
 - Never accept cookies or sign up for anything unless the user asks.
@@ -229,6 +235,13 @@ def open_with_system(path: str) -> str:
     return f"Opened {p}"
 
 
+def human_size(n: int) -> str:
+    for unit, div in (("GB", 1024 ** 3), ("MB", 1024 ** 2), ("KB", 1024)):
+        if n >= div:
+            return f"{n / div:.2f} {unit}"
+    return f"{n} bytes"
+
+
 def execute(a: Action, index) -> str:
     try:
         p = Path(a.path).expanduser()
@@ -240,13 +253,28 @@ def execute(a: Action, index) -> str:
         if a.kind == "list":
             if not p.is_dir():
                 return f"Not a folder: {p}"
-            items = []
-            for e in sorted(os.scandir(p), key=lambda e: (not e.is_dir(), e.name.lower()))[:300]:
+            entries = sorted(os.scandir(p), key=lambda e: (not e.is_dir(), e.name.lower()))
+            items, sizes = [], []
+            for e in entries:
                 try:
-                    items.append(f"[folder] {e.name}" if e.is_dir() else f"{e.name} ({e.stat().st_size} bytes)")
+                    if e.is_dir():
+                        items.append(f"[folder] {e.name}")
+                    else:
+                        size = e.stat().st_size
+                        sizes.append((size, e.name))
+                        items.append(f"{e.name} ({human_size(size)})")
                 except OSError:
                     items.append(e.name)
-            return f"Contents of {p}:\n" + "\n".join(items) if items else f"{p} is empty"
+            if not items:
+                return f"{p} is empty"
+            shown = items[:250]
+            head = f"Contents of {p} ({len(entries)} items"
+            head += f", showing the first {len(shown)} by name):" if len(items) > len(shown) else "):"
+            out = head + "\n" + "\n".join(shown)
+            if len(sizes) > 10:
+                big = sorted(sizes, reverse=True)[:10]
+                out += "\n\nBiggest files in this folder:\n" + "\n".join(f"{human_size(sz)}  {n}" for sz, n in big)
+            return out
         if a.kind == "read":
             if not p.is_file():
                 return f"File not found: {p}"
@@ -283,7 +311,11 @@ BLOCK_SIGNS = re.compile(
     r"are you a (?:robot|human)|verify you are (?:a )?human|unusual traffic|captcha|bot detection|"
     r"something went wrong|pardon our interruption|press (?:&|and) hold|checking your browser|attention required|"
     r"enable javascript and cookies|this site can.t be reached|err_name_not_resolved|err_connection|"
-    r"dns_probe|page (?:not|cannot be) found|\b404\b.{0,40}not found|server not found", re.I)
+    r"dns_probe|page (?:not|cannot be) found|\b404\b.{0,40}not found|server not found|err_file_not_found", re.I)
+# Signs that the whole site refuses the browser (not just one missing page).
+SITE_BLOCK = re.compile(r"access denied|permission to access|request blocked|forbidden|robot|human|unusual traffic|"
+                        r"captcha|bot detection|something went wrong|pardon our interruption|press (?:&|and) hold|"
+                        r"checking your browser|attention required", re.I)
 
 
 def blocked_hint(result: str) -> str:
@@ -292,9 +324,12 @@ def blocked_hint(result: str) -> str:
     text = m.group(1) if m else result[:3000]
     if len(text) > 2500 or not BLOCK_SIGNS.search(text[:2500]):
         return ""
-    return ("\n\n[LocalForge note] This page is an error or block page, not real content. Do NOT open this site again "
-            "and do not guess other addresses on it. Use <search query=\"...\"/> and open a result link instead, "
-            "or answer from the search snippets you already have.")
+    if SITE_BLOCK.search(text[:2500]):
+        return ("\n\n[LocalForge note] This site blocked the browser. This page is not real content. Do NOT open this "
+                "site again and do not guess other addresses on it. Open a different search result, "
+                "or answer from the search snippets you already have.")
+    return ("\n\n[LocalForge note] This page doesn't exist or couldn't load (an error page, not real content). "
+            "Don't retry the same address. Use an address from search results, or <search> again.")
 
 
 def site_of(url: str) -> str:

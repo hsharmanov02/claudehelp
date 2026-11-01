@@ -44,6 +44,8 @@ class App:
         self.done_lookups = {}
         self.repeats = 0
         self.blocked_sites = set()
+        self.ran_code = False
+        self.failed_code = set()
         self.search_state = {"query": "", "results": [], "busy": False, "error": None}
         self.repo_state = {"repo": None, "files": [], "busy": False, "error": None}
         self.recs = {"items": [], "busy": False, "summary": None}
@@ -248,10 +250,14 @@ class App:
             model_text = f"{text}\n\nFile {attachment}:\n```\n{body}\n```"
             display = f"📎 {Path(attachment).name}\n{text}"
         user = self._msg("user", display, model_text)
-        self.steps_left = 8
+        self.steps_left = 12
+        self.ran_code = False
+        self.failed_code = set()
         self.done_lookups = {}   # tool calls already made for this request -> result
         self.repeats = 0
         self.blocked_sites = set()
+        self.ran_code = False
+        self.failed_code = set()
         self.generating = True
         self.touch()
 
@@ -406,7 +412,8 @@ class App:
                 self._msg("note", "Stopped.")
                 break
             actions = tools.parse(full)
-            if not any(a.kind == "run" for a in actions):
+            if not any(a.kind == "run" for a in actions) and not self.ran_code and not self.repeats:
+                # Only before any code ran: later, code blocks in a final answer are examples, not requests.
                 fb = tools.fallback_run(self._last_user_text(), full)
                 if fb:
                     actions.append(fb)
@@ -420,67 +427,71 @@ class App:
                                       "<run lang=\"...\"> and </run>.")
                     continue
                 break
-            cont = False
             auto = s.get("autoApprove")
             browser_auto = auto or s.get("browserAutoApprove")
             results = []
-            blocked = False   # a browser step waits for approval; later browser steps depend on it
+            did_run = False
+            waiting = False   # a card waits for the user: everything after it depends on it, so stop there
             for a in actions:
+                if waiting:
+                    break
                 key = (a.kind, a.path, a.content)
                 site = self._site_for(a)
-                if ((a.read_only or a.browser_read) and key in self.done_lookups) or (site and site in self.blocked_sites):
+                if site and site in self.blocked_sites:
                     self.repeats += 1
-                    results.append(f"You already did this ({a.label}) or that site blocked you. "
+                    results.append(f"Skipped ({a.label}): {site} blocks the browser. Don't use that site again. "
+                                   "Use another result or answer with what you have.")
+                    continue
+                if (a.read_only or a.browser_read) and key in self.done_lookups:
+                    self.repeats += 1
+                    results.append(f"You already did this ({a.label}) and got the result above. "
                                    "Do not repeat it. Use what you have and answer the user now.")
+                    continue
+                if a.kind == "run" and self._code_key(a) in self.failed_code:
+                    self.repeats += 1
+                    results.append("That exact code already failed or the user said no to it. Don't run it again. "
+                                   "Fix it differently, or answer the user with what you have.")
                     continue
                 if a.read_only:
                     results.append(tools.execute(a, self.index))
                     self.done_lookups[key] = True
                     continue
-                if a.is_browser:
-                    if blocked:
-                        continue
-                    if a.browser_read:
-                        self._set_status(a.label + "…")
-                        r = tools.execute_browser(a, self.browser)
-                        self._note_block(a, r)
-                        results.append(r)
-                        if a.kind != "scroll":
-                            self.done_lookups[key] = True
-                        continue
-                    pa = {"id": len(reply["actions"]), "action": a.to_dict(), "status": "pending", "result": None}
-                    reply["actions"].append(pa)
-                    self.touch()
-                    if browser_auto:
-                        pa["status"] = "done"
-                        r = tools.execute_browser(a, self.browser)
-                        self._note_block(a, r)
-                        pa["result"] = self._short(r)
-                        results.append(r)
-                    else:
-                        blocked = True
+                if a.is_browser and a.browser_read:
+                    self._set_status(a.label + "…")
+                    r = tools.execute_browser(a, self.browser)
+                    self._note_block(a, r)
+                    results.append(r)
+                    if a.kind != "scroll":
+                        self.done_lookups[key] = True
                     continue
                 pa = {"id": len(reply["actions"]), "action": a.to_dict(), "status": "pending", "result": None}
                 reply["actions"].append(pa)
                 self.touch()
-                if a.kind == "run" and auto:
+                if a.is_browser and browser_auto:
+                    pa["status"] = "done"
+                    r = tools.execute_browser(a, self.browser)
+                    self._note_block(a, r)
+                    pa["result"] = self._short(r)
+                    results.append(r)
+                elif a.kind == "run" and auto:
                     pa["status"] = "done"
                     self._execute_run(a, pa)
-                    cont = True
-                elif auto and a.kind in ("write", "mkdir"):
+                    did_run = True
+                elif auto and a.kind in ("write", "mkdir") or (
+                        auto and a.kind == "open" and not a.path.lower().endswith(tools.RISKY_OPEN)):
                     pa["status"] = "done"
                     pa["result"] = tools.execute(a, self.index)
-                elif auto and a.kind == "open" and not a.path.lower().endswith(tools.RISKY_OPEN):
-                    pa["status"] = "done"
-                    pa["result"] = tools.execute(a, self.index)
-            if self.repeats >= 2 and self.steps_left > 1:
+                    results.append(pa["result"])
+                    self._files_changed()
+                else:
+                    waiting = True
+            if self.repeats >= 2 and self.steps_left > 1 and not waiting:
                 results.append("STOP using tools now. Write your final answer to the user from the results above. "
                                "If you couldn't get the information, say so and share what you did find.")
                 self.steps_left = 1
             if results:
                 self._msg("tool", "\n\n".join(results))
-                cont = True
-            if not cont:
+            if waiting or not (results or did_run):
                 break
             if self.steps_left == 0:
                 self._msg("note", 'Paused after several steps. Say "continue" to keep going.')
@@ -497,6 +508,9 @@ class App:
             self.running_code = False
         out["text"] = ("✓ " if r.ok else "⏱ " if r.timed_out else "✗ ") + f"{r.lang}\n{r.output}"
         out["modelText"] = r.for_model()
+        self.ran_code = True
+        if not r.ok:
+            self.failed_code.add(self._code_key(a))
         if r.preview:
             self.preview = r.preview
         if a.path in ("javascript", "html") and r.lang.endswith("(browser)"):
@@ -562,6 +576,7 @@ class App:
                 else:
                     pa["result"] = tools.execute(a, self.index)
                     self._msg("tool", pa["result"])
+                    self._files_changed()
                 # Carry on once every card in that reply has been answered.
                 waiting = msg and any(x["status"] == "pending" for x in msg["actions"])
                 if self.engine.loaded and not waiting:
@@ -578,15 +593,21 @@ class App:
 
     def _site_for(self, a: tools.Action) -> str:
         """The website an action works on: the URL it opens, or the page that's open for clicks and typing."""
-        if a.kind in ("browse", "fetch"):
-            return tools.site_of(a.path)
-        if a.kind in ("page", "click", "type", "press", "js", "scroll"):
-            return tools.site_of(getattr(self.browser, "url", "") or "")
-        return ""
+        url = a.path if a.kind in ("browse", "fetch") else \
+            (getattr(self.browser, "url", "") or "") if a.kind in ("page", "click", "type", "press", "js", "scroll") else ""
+        return tools.site_of(url) if re.match(r"(https?://)?[\w-]+(\.[\w-]+)+(/|$|:)", url.strip(), re.I) else ""
+
+    @staticmethod
+    def _code_key(a: tools.Action):
+        return (a.path, re.sub(r"\s+", " ", a.content).strip())
+
+    def _files_changed(self):
+        """After a write/mkdir/delete, folder listings and file reads may differ, so allow them again."""
+        self.done_lookups = {k: v for k, v in self.done_lookups.items() if k[0] not in ("list", "read", "find")}
 
     def _note_block(self, a: tools.Action, result: str):
-        if "[LocalForge note]" in result:
-            site = self._site_for(a) or tools.site_of(getattr(self.browser, "url", "") or "")
+        if "This site blocked the browser" in result:
+            site = self._site_for(a)
             if site:
                 self.blocked_sites.add(site)
 
@@ -595,6 +616,9 @@ class App:
         if not pa or pa["status"] != "pending":
             return
         pa["status"] = "rejected"
+        d = pa["action"]
+        if d["kind"] == "run":
+            self.failed_code.add(self._code_key(tools.Action("run", d["path"], d["content"])))
         self.save_chat()
         self.touch()
         msg = next((m for m in self.messages if m["id"] == msg_id), None)

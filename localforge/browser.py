@@ -7,6 +7,7 @@ The AI can also read page text, list the clickable things on a page, fill forms 
 import base64
 import glob
 import json
+import re
 import os
 import shutil
 import subprocess
@@ -67,6 +68,13 @@ SNAPSHOT_JS = r"""
     if (tag === 'select') extra = ' options=' + [...el.options].slice(0, 12).map(o => o.text.trim()).join('|');
     if (el.type === 'checkbox' || el.type === 'radio') extra += el.checked ? ' [checked]' : ' [unchecked]';
     if (tag === 'a') { try { extra += ' -> ' + new URL(el.href).href.slice(0, 100); } catch (e) {} }
+    if (label.length < 4 || el.type === 'checkbox' || el.type === 'radio') {
+      // Short labels like "X" or "on": add the text of the row/item it sits in, so it's clear which one it is.
+      const row = el.closest('li,tr,[role=row],[role=listitem],label,.item,.row,div');
+      const ctx = row ? row.innerText.trim().replace(/\s+/g, ' ').replace(label, '').trim().slice(0, 50) : '';
+      if (ctx) extra += ' (in: "' + ctx + '")';
+      if (el.type === 'checkbox' || el.type === 'radio') label = label === 'on' ? '' : label;
+    }
     out.push('[' + n + '] ' + kind + ' "' + label + '"' + extra);
   }
   const text = (document.body ? document.body.innerText : '').replace(/\n{3,}/g, '\n\n').trim();
@@ -423,7 +431,9 @@ class Browser:
 
     def navigate(self, url: str):
         self.ensure()
-        url = url.strip()
+        url = url.strip().strip('"')
+        if re.match(r"^[A-Za-z]:[\\/]", url) or url.startswith("\\\\") or (url.startswith("/") and Path(url).exists()):
+            url = Path(url).resolve().as_uri()      # a file on this PC, not a web address
         if not url:
             return
         if url.startswith(("http://", "https://", "about:", "file:", "data:")):
