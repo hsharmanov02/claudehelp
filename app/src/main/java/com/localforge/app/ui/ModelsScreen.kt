@@ -1,7 +1,5 @@
 package com.localforge.app.ui
 
-import android.app.ActivityManager
-import android.content.Context
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
@@ -24,11 +22,17 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.PhoneAndroid
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -45,7 +49,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
@@ -53,21 +57,14 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.localforge.app.AppViewModel
+import com.localforge.app.data.HfFile
 import com.localforge.app.data.LocalModel
 import com.localforge.app.data.formatBytes
 
-private fun totalRam(ctx: Context): Long {
-    val am = ctx.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
-    val info = ActivityManager.MemoryInfo()
-    am.getMemoryInfo(info)
-    return info.totalMem
-}
-
 @Composable
 fun ModelsScreen(vm: AppViewModel) {
-    val ctx = LocalContext.current
-    val ram = remember { totalRam(ctx) }
     var confirmDelete by remember { mutableStateOf<LocalModel?>(null) }
+    val ram = vm.device?.totalRam ?: 0L
 
     LazyColumn(
         Modifier.fillMaxSize().padding(horizontal = 20.dp),
@@ -76,59 +73,85 @@ fun ModelsScreen(vm: AppViewModel) {
         item {
             Spacer(Modifier.height(12.dp))
             ScreenTitle("Models")
-            Text("Download, load and manage local GGUF models", color = C.Muted, fontSize = 15.sp)
-            Text("Phone memory: ${formatBytes(ram)}", color = C.Muted, fontSize = 13.sp)
+            Text("Uncensored models only · runs fully on your phone", color = C.Muted, fontSize = 15.sp)
+            vm.engineMessage?.let {
+                Spacer(Modifier.height(8.dp))
+                Text(it, color = C.Gold, fontSize = 14.sp)
+            }
         }
 
-        if (vm.localModels.isEmpty() && vm.downloads.isEmpty()) {
-            item {
-                Panel {
-                    Text("No models yet", color = C.Text, fontWeight = FontWeight.Bold, fontSize = 18.sp)
-                    Text("Search below. For coding on a phone, a 1.5B–3B \"Coder\" model in Q4_K_M is the sweet spot.", color = C.Muted)
+        item { PhoneCard(vm) }
+
+        if (vm.recommendations.isNotEmpty()) {
+            item { SectionHeader("Best uncensored models for your phone", "Biggest model that fits your memory, at a good quality level") }
+            items(vm.recommendations.withIndex().toList(), key = { "rec-" + it.value.file.repo }) { (i, r) ->
+                Panel(borderColor = if (i == 0) C.Gold else C.Border) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        if (i == 0) {
+                            Icon(Icons.Filled.Star, null, tint = C.Gold, modifier = Modifier.size(18.dp))
+                            Spacer(Modifier.width(6.dp))
+                            Text("Best pick", color = C.Gold, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                        } else {
+                            Text("#${i + 1}", color = C.Muted, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                        }
+                    }
+                    Text(r.file.repo, color = C.Text, fontWeight = FontWeight.Bold, fontSize = 16.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                    Text(r.reason, color = C.Muted, fontSize = 13.sp)
+                    Text("↓ ${r.downloads} downloads", color = C.Muted, fontSize = 12.sp)
+                    Spacer(Modifier.height(8.dp))
+                    FileRow(vm, r.file)
                 }
             }
         }
 
-        items(vm.localModels, key = { "local-" + it.name }) { m ->
+        item { SectionHeader("Your models") }
+        if (vm.localModels.isEmpty()) {
+            item { Text("None yet. Scan your phone or download one below.", color = C.Muted) }
+        }
+        items(vm.localModels, key = { "local-" + it.path }) { m ->
             val active = vm.loadedModel == m.name
+            val external = m.file.parentFile != vm.store.dir
             Panel(borderColor = if (active) C.Accent else C.Border) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Box(Modifier.weight(1f)) {
-                        StatusDot(active, m.name.removeSuffix(".gguf").take(40))
-                    }
-                    if (active) Tag("Active", androidx.compose.ui.graphics.Color(0xFF1E3B26), C.Good) else Tag("Local")
+                    Box(Modifier.weight(1f)) { StatusDot(active, m.name.removeSuffix(".gguf").take(40)) }
+                    if (active) Tag("Active", Color(0xFF1E3B26), C.Good) else Tag(if (external) "On phone" else "Local")
                 }
-                Text(formatBytes(m.size) + if (m.size > ram * 0.6) " · may be too big for this phone" else "", color = C.Muted, fontSize = 13.sp)
+                Text(
+                    formatBytes(m.size) + (if (ram > 0 && m.size > ram * 0.6) " · may be too big for this phone" else ""),
+                    color = C.Muted, fontSize = 13.sp
+                )
+                if (external) Text(m.path, color = C.Muted, fontSize = 11.sp, fontFamily = FontFamily.Monospace, maxLines = 2, overflow = TextOverflow.Ellipsis)
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     TextButton(onClick = { vm.loadModel(m) }, enabled = !vm.loading && !active) {
                         Text(if (active) "Loaded" else "▶  Load & use", fontSize = 17.sp, fontWeight = FontWeight.SemiBold)
                     }
                     Spacer(Modifier.weight(1f))
-                    IconButton(onClick = { confirmDelete = m }) { Icon(Icons.Filled.Delete, "Delete", tint = C.Muted) }
+                    IconButton(onClick = { confirmDelete = m }) { Icon(Icons.Filled.Delete, "Remove", tint = C.Muted) }
                 }
             }
         }
 
-        items(vm.downloads, key = { "dl-" + it.id }) { d ->
-            Panel {
-                Text(d.fileName, color = C.Text, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                Spacer(Modifier.height(8.dp))
-                if (d.total > 0) LinearProgressIndicator(progress = { d.done.toFloat() / d.total }, modifier = Modifier.fillMaxWidth())
-                else LinearProgressIndicator(Modifier.fillMaxWidth())
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text("${formatBytes(d.done)} of ${formatBytes(d.total)}", color = C.Muted, fontSize = 13.sp, modifier = Modifier.weight(1f))
-                    TextButton(onClick = { vm.cancelDownload(d.fileName) }) { Text("Cancel", color = C.Bad) }
+        val stray = vm.downloads.values.filter { d ->
+            vm.recommendations.none { it.file.fileName == d.file.fileName } && vm.repoFiles.none { it.fileName == d.file.fileName }
+        }
+        if (stray.isNotEmpty()) {
+            item { SectionHeader("Downloads") }
+            items(stray, key = { "dl-" + it.file.fileName }) { d ->
+                Panel {
+                    Text(d.file.fileName, color = C.Text, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Spacer(Modifier.height(6.dp))
+                    FileRow(vm, d.file)
                 }
             }
         }
 
         item {
             Spacer(Modifier.height(8.dp))
-            SectionHeader("Download from Hugging Face", "Public models need no token. Add one in Home → settings for gated models.")
+            SectionHeader("Search Hugging Face", "Results are filtered to uncensored / abliterated models")
             OutlinedTextField(
                 value = vm.searchQuery,
                 onValueChange = { vm.searchQuery = it },
-                placeholder = { Text("Search GGUF models") },
+                placeholder = { Text("Search uncensored GGUF models") },
                 leadingIcon = { Icon(Icons.Filled.Search, null) },
                 singleLine = true,
                 shape = RoundedCornerShape(28.dp),
@@ -139,23 +162,8 @@ fun ModelsScreen(vm: AppViewModel) {
             Spacer(Modifier.height(8.dp))
             Text("Try a model family", color = C.Muted, fontSize = 14.sp)
             Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                listOf("qwen coder", "deepseek coder", "llama", "qwen", "gemma", "phi").forEach { q ->
+                listOf("coder", "llama", "qwen", "gemma", "mistral", "dolphin", "phi").forEach { q ->
                     OutlinedButton(onClick = { vm.search(q) }, shape = RoundedCornerShape(14.dp)) { Text(q) }
-                }
-            }
-        }
-
-        item {
-            Panel(borderColor = C.Gold) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(Icons.Filled.Star, null, tint = C.Gold)
-                    Spacer(Modifier.width(8.dp))
-                    Text("Recommended for coding", color = C.Text, fontWeight = FontWeight.Bold, fontSize = 17.sp)
-                }
-                Text("Qwen2.5-Coder 1.5B Instruct — pick the Q4_K_M file (about 1 GB). Use the 3B version if your phone has 8 GB+ RAM.", color = C.Muted, fontSize = 14.sp)
-                Row {
-                    TextButton(onClick = { vm.search("Qwen2.5-Coder-1.5B-Instruct-GGUF") }) { Text("Show 1.5B") }
-                    TextButton(onClick = { vm.search("Qwen2.5-Coder-3B-Instruct-GGUF") }) { Text("Show 3B") }
                 }
             }
         }
@@ -174,21 +182,19 @@ fun ModelsScreen(vm: AppViewModel) {
                 }
             }
             items(vm.repoFiles, key = { "f-" + it.path }) { f ->
-                val tooBig = f.size > ram * 0.6
-                Row(
-                    Modifier.fillMaxWidth().clip(RoundedCornerShape(18.dp)).background(C.CardInner).padding(14.dp),
-                    verticalAlignment = Alignment.CenterVertically
+                val tooBig = ram > 0 && f.size > ram * 0.6
+                Column(
+                    Modifier.fillMaxWidth().clip(RoundedCornerShape(18.dp)).background(C.CardInner).padding(14.dp)
                 ) {
-                    Column(Modifier.weight(1f)) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Tag(f.quant, C.AccentDark, C.Accent)
-                            Spacer(Modifier.width(8.dp))
-                            Text(formatBytes(f.size), color = if (tooBig) C.Bad else C.Text, fontWeight = FontWeight.SemiBold)
-                        }
-                        Text(f.fileName, color = C.Muted, fontSize = 12.sp, fontFamily = FontFamily.Monospace, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                        if (tooBig) Text("Probably too big for this phone", color = C.Bad, fontSize = 12.sp)
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Tag(f.quant, C.AccentDark, C.Accent)
+                        Spacer(Modifier.width(8.dp))
+                        Text(formatBytes(f.size), color = if (tooBig) C.Bad else C.Text, fontWeight = FontWeight.SemiBold)
+                        if (tooBig) Text("  too big for this phone", color = C.Bad, fontSize = 12.sp)
                     }
-                    IconButton(onClick = { vm.download(f) }) { Icon(Icons.Filled.Download, "Download", tint = C.Accent) }
+                    Text(f.fileName, color = C.Muted, fontSize = 12.sp, fontFamily = FontFamily.Monospace, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                    Spacer(Modifier.height(6.dp))
+                    FileRow(vm, f)
                 }
             }
         } else {
@@ -202,7 +208,7 @@ fun ModelsScreen(vm: AppViewModel) {
                         Text(r.id, color = C.Text, fontWeight = FontWeight.SemiBold, maxLines = 2, overflow = TextOverflow.Ellipsis)
                         Text("↓ ${r.downloads}   ♥ ${r.likes}", color = C.Muted, fontSize = 13.sp)
                     }
-                    Text("Files", color = C.Accent)
+                    Text("Files ›", color = C.Accent)
                 }
             }
         }
@@ -210,13 +216,103 @@ fun ModelsScreen(vm: AppViewModel) {
     }
 
     confirmDelete?.let { m ->
+        val external = m.file.parentFile != vm.store.dir
         AlertDialog(
             onDismissRequest = { confirmDelete = null },
-            title = { Text("Delete model?") },
-            text = { Text("${m.name} (${formatBytes(m.size)}) will be removed from this phone.") },
-            confirmButton = { TextButton(onClick = { vm.deleteModel(m); confirmDelete = null }) { Text("Delete", color = C.Bad) } },
+            title = { Text(if (external) "Remove from list?" else "Delete model?") },
+            text = {
+                Text(
+                    if (external) "${m.name} stays on your phone; LocalForge just stops listing it."
+                    else "${m.name} (${formatBytes(m.size)}) will be deleted from this phone."
+                )
+            },
+            confirmButton = { TextButton(onClick = { vm.deleteModel(m); confirmDelete = null }) { Text(if (external) "Remove" else "Delete", color = C.Bad) } },
             dismissButton = { TextButton(onClick = { confirmDelete = null }) { Text("Cancel") } }
         )
     }
 }
 
+@Composable
+private fun PhoneCard(vm: AppViewModel) {
+    val d = vm.device
+    Panel(borderColor = C.Accent) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Icon(Icons.Filled.PhoneAndroid, null, tint = C.Accent)
+            Spacer(Modifier.width(10.dp))
+            Text("Your phone", color = C.Text, fontWeight = FontWeight.Bold, fontSize = 20.sp)
+        }
+        if (d != null) {
+            Spacer(Modifier.height(6.dp))
+            Text("${d.model} · ${d.chip}", color = C.Muted, fontSize = 13.sp)
+            Text(
+                "RAM ${formatBytes(d.totalRam)} (${formatBytes(d.availRam)} free) · ${d.cores} cores · ${formatBytes(d.freeStorage)} storage free",
+                color = C.Muted, fontSize = 13.sp
+            )
+            Text("Max model size for this phone: ~${formatBytes(d.modelBudget)}", color = C.Text, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+        }
+        vm.scanSummary?.let {
+            Spacer(Modifier.height(6.dp))
+            Text(it, color = C.Text, fontSize = 14.sp)
+        }
+        Spacer(Modifier.height(12.dp))
+        Button(
+            onClick = { vm.scanPhone() },
+            enabled = !vm.scanning,
+            shape = RoundedCornerShape(50),
+            colors = ButtonDefaults.buttonColors(containerColor = C.Accent),
+            modifier = Modifier.fillMaxWidth().height(52.dp)
+        ) {
+            if (vm.scanning) {
+                CircularProgressIndicator(Modifier.size(22.dp), strokeWidth = 2.dp, color = C.Bg)
+                Spacer(Modifier.width(10.dp))
+                Text("Scanning…")
+            } else {
+                Text("Scan phone & pick best uncensored model", fontWeight = FontWeight.Bold)
+            }
+        }
+    }
+}
+
+/** Download control for one file: button, live progress, cancel, retry, or "downloaded". */
+@Composable
+private fun FileRow(vm: AppViewModel, f: HfFile) {
+    val d = vm.downloads[f.fileName]
+    val have = vm.localModels.any { it.name == f.fileName }
+    when {
+        d != null && d.error != null -> Column {
+            Text(d.error ?: "", color = C.Bad, fontSize = 13.sp)
+            Row {
+                TextButton(onClick = { vm.download(f) }) {
+                    Icon(Icons.Filled.Refresh, null); Spacer(Modifier.width(6.dp)); Text("Retry / resume")
+                }
+                TextButton(onClick = { vm.cancelDownload(f.fileName) }) { Text("Remove", color = C.Muted) }
+            }
+        }
+        d != null -> Column {
+            val total = if (d.total > 0) d.total else f.size
+            if (total > 0) LinearProgressIndicator(progress = { (d.done.toFloat() / total).coerceIn(0f, 1f) }, modifier = Modifier.fillMaxWidth())
+            else LinearProgressIndicator(Modifier.fillMaxWidth())
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                val pct = if (total > 0) (d.done * 100 / total).toInt() else 0
+                Text("Downloading $pct% · ${formatBytes(d.done)} of ${formatBytes(total)}", color = C.Text, fontSize = 13.sp, modifier = Modifier.weight(1f))
+                IconButton(onClick = { vm.cancelDownload(f.fileName) }) { Icon(Icons.Filled.Close, "Cancel", tint = C.Bad) }
+            }
+            Text("Keep LocalForge open until it finishes.", color = C.Muted, fontSize = 12.sp)
+        }
+        have -> Row(verticalAlignment = Alignment.CenterVertically) {
+            Icon(Icons.Filled.CheckCircle, null, tint = C.Good, modifier = Modifier.size(20.dp))
+            Spacer(Modifier.width(6.dp))
+            Text("Downloaded — load it from Your models", color = C.Good, fontSize = 14.sp)
+        }
+        else -> Button(
+            onClick = { vm.download(f) },
+            shape = RoundedCornerShape(50),
+            colors = ButtonDefaults.buttonColors(containerColor = C.AccentDark, contentColor = C.Accent),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Icon(Icons.Filled.Download, null)
+            Spacer(Modifier.width(8.dp))
+            Text("Download ${f.quant} · ${formatBytes(f.size)}", fontWeight = FontWeight.SemiBold)
+        }
+    }
+}

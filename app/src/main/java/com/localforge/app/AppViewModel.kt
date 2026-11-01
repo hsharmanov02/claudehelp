@@ -7,13 +7,16 @@ import android.os.Handler
 import android.os.Looper
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.localforge.app.agent.FileAction
 import com.localforge.app.agent.FileTools
-import com.localforge.app.data.DownloadState
+import com.localforge.app.data.DeviceInfo
+import com.localforge.app.data.Recommendation
+import com.localforge.app.data.formatBytes
 import com.localforge.app.data.HfFile
 import com.localforge.app.data.HfModel
 import com.localforge.app.data.HuggingFace
@@ -36,6 +39,13 @@ enum class ActionStatus { PENDING, DONE, REJECTED }
 class PendingAction(val action: FileAction) {
     var status by mutableStateOf(ActionStatus.PENDING)
     var result by mutableStateOf<String?>(null)
+}
+
+class DownloadProgress(val file: HfFile) {
+    var done by mutableStateOf(0L)
+    var total by mutableStateOf(file.size)
+    var error by mutableStateOf<String?>(null)
+    var job: Job? = null
 }
 
 class UiMessage(val role: Role, initial: String, val modelText: String? = null) {
@@ -77,7 +87,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     // ---- Models ----
     val localModels = mutableStateListOf<LocalModel>()
-    val downloads = mutableStateListOf<DownloadState>()
+    /** Active or failed downloads, keyed by file name. */
+    val downloads = mutableStateMapOf<String, DownloadProgress>()
     var loadedModel by mutableStateOf<String?>(null)
         private set
     var loading by mutableStateOf(false)
@@ -95,7 +106,15 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     val repoFiles = mutableStateListOf<HfFile>()
     var repoLoading by mutableStateOf(false)
         private set
-    private var pollJob: Job? = null
+
+    // ---- Phone scan + recommendations ----
+    var device by mutableStateOf<DeviceInfo?>(null)
+        private set
+    val recommendations = mutableStateListOf<Recommendation>()
+    var scanning by mutableStateOf(false)
+        private set
+    var scanSummary by mutableStateOf<String?>(null)
+        private set
 
     fun refreshPermission() {
         hasFileAccess = Environment.isExternalStorageManager()
@@ -107,9 +126,33 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         localModels.addAll(store.localModels())
     }
 
+    fun scanPhone() {
+        if (scanning) return
+        viewModelScope.launch {
+            scanning = true
+            scanSummary = "Scanning your phone…"
+            try {
+                val d = withContext(Dispatchers.IO) { store.deviceInfo() }
+                device = d
+                val found = if (hasFileAccess) store.scanPhone() else -1
+                refreshModels()
+                scanSummary = (if (found >= 0) "Found $found uncensored model file(s) already on your phone. " else "Allow all-files access to also find models already on your phone. ") +
+                    "Finding the best uncensored models for ${formatBytes(d.totalRam)} RAM…"
+                val recs = HuggingFace.recommend(d, hfToken, coding = true)
+                recommendations.clear()
+                recommendations.addAll(recs)
+                scanSummary = (if (found >= 0) "Found $found uncensored model file(s) on your phone. " else "") +
+                    if (recs.isEmpty()) "Couldn't reach Hugging Face or nothing fits — check your connection." else "Top picks for your phone are below."
+            } catch (e: Exception) {
+                scanSummary = "Scan failed: ${e.message}"
+            } finally {
+                scanning = false
+            }
+        }
+    }
+
     fun search(query: String = searchQuery) {
         searchQuery = query
-        if (query.isBlank()) return
         viewModelScope.launch {
             searching = true
             searchError = null
@@ -118,7 +161,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 val r = HuggingFace.search(query, hfToken)
                 searchResults.clear()
                 searchResults.addAll(r)
-                if (r.isEmpty()) searchError = "No GGUF models found for \"$query\""
+                if (r.isEmpty()) searchError = "No uncensored GGUF models found for \"$query\""
             } catch (e: Exception) {
                 searchError = "Search failed: ${e.message}"
             } finally {
@@ -135,6 +178,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             repoLoading = true
             try {
                 repoFiles.addAll(HuggingFace.ggufFiles(id, hfToken))
+                if (repoFiles.isEmpty()) searchError = "No single-file GGUF models in $id"
             } catch (e: Exception) {
                 searchError = "Couldn't list files: ${e.message}"
             } finally {
@@ -144,37 +188,36 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun download(file: HfFile) {
-        try {
-            store.startDownload(file, hfToken)
-            engineMessage = "Downloading ${file.fileName}"
-            startPolling()
-        } catch (e: Exception) {
-            engineMessage = "Download failed to start: ${e.message}"
+        val existing = downloads[file.fileName]
+        if (existing != null && existing.job?.isActive == true) return
+        val free = store.deviceInfo().freeStorage
+        if (file.size > 0 && file.size > free - 200L * 1024 * 1024) {
+            engineMessage = "Not enough free storage for ${file.fileName} (${formatBytes(file.size)} needed, ${formatBytes(free)} free)."
+            return
+        }
+        val p = DownloadProgress(file)
+        downloads[file.fileName] = p
+        engineMessage = "Downloading ${file.fileName}"
+        p.job = viewModelScope.launch {
+            try {
+                store.download(file, hfToken) { done, total ->
+                    main.post { p.done = done; p.total = total }
+                }
+                downloads.remove(file.fileName)
+                refreshModels()
+                engineMessage = "Downloaded ${file.fileName}. Load it on the Home tab."
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                p.error = e.message ?: "Download failed"
+            }
         }
     }
 
     fun cancelDownload(name: String) {
-        store.cancel(name)
-        downloads.removeAll { it.fileName == name }
-    }
-
-    private fun startPolling() {
-        if (pollJob?.isActive == true) return
-        pollJob = viewModelScope.launch {
-            while (true) {
-                val states = withContext(Dispatchers.IO) { store.pollDownloads() }
-                val failed = states.filter { it.status == android.app.DownloadManager.STATUS_FAILED }
-                failed.forEach { engineMessage = "Download failed: ${it.fileName}" }
-                val active = states - failed.toSet()
-                val finished = downloads.size > active.size
-                downloads.clear()
-                downloads.addAll(active)
-                if (finished) refreshModels()
-                if (active.isEmpty()) break
-                delay(1000)
-            }
-            refreshModels()
-        }
+        downloads[name]?.job?.cancel()
+        downloads.remove(name)
+        store.partFile(name).delete()
     }
 
     fun deleteModel(m: LocalModel) {
@@ -442,6 +485,6 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     init {
         refreshPermission()
         refreshModels()
-        startPolling()
+        device = store.deviceInfo()
     }
 }

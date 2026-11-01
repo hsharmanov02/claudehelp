@@ -29,6 +29,8 @@ import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.ViewList
 import androidx.compose.material3.Icon
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.SideEffect
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -65,6 +67,9 @@ class MainActivity : ComponentActivity() {
 
 @Composable
 fun App(vm: AppViewModel) {
+    val view = LocalView.current
+    val downloading = vm.downloads.values.any { it.error == null }
+    SideEffect { view.keepScreenOn = downloading }
     Box(
         Modifier
             .fillMaxSize()
