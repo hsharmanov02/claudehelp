@@ -78,7 +78,10 @@ private val simpleTagDisplay = Regex("""<(list|read|mkdir|delete)\s+path\s*=\s*"
 private val runTagDisplay = Regex("""<run(?:\s+lang(?:uage)?\s*=\s*"([^"]*)")?\s*>\r?\n?([\s\S]*?)(</run>|$)""", RegexOption.IGNORE_CASE)
 private val innerFence = Regex("```[\\w+#.-]*[ \\t]*\\r?\\n?|```")
 
-private fun prettify(text: String): String = text
+private val findTagDisplay = Regex("""<find\s+(?:query|name|q)\s*=\s*"([^"]+)"\s*/?>""", RegexOption.IGNORE_CASE)
+
+private fun prettify(text: String): String = FileTools.stripThinking(text)
+    .replace(findTagDisplay) { "🔎 search phone for \"${it.groupValues[1]}\"" }
     .replace(runTagDisplay) {
         val lang = it.groupValues[1].ifBlank { "python" }
         val code = it.groupValues[2].replace(innerFence, "").trim()

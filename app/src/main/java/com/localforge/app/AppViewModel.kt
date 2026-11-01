@@ -17,6 +17,7 @@ import org.json.JSONObject
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.localforge.app.agent.CodeRunner
+import com.localforge.app.agent.FileIndex
 import com.localforge.app.agent.TermuxBridge
 import com.localforge.app.agent.FileAction
 import com.localforge.app.agent.FileTools
@@ -130,6 +131,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun refreshPermission() {
         hasFileAccess = Environment.isExternalStorageManager()
         if (hasFileAccess && entries.isEmpty()) refreshFiles()
+        if (hasFileAccess) viewModelScope.launch { try { FileIndex.ensureFresh() } catch (_: Exception) {} }
     }
 
     fun refreshModels() {
@@ -347,9 +349,81 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
         input = ""
         attachment = null
-        messages += UiMessage(Role.USER, display, modelText)
+        val userMsg = UiMessage(Role.USER, display, modelText)
+        messages += userMsg
         stepsLeft = 8
-        runAgent()
+        if (!looksLikeFileRequest(text)) {
+            runAgent()
+            return
+        }
+        if (!hasFileAccess) {
+            messages += UiMessage(Role.NOTE, "To let the AI see your files, allow all-files access: Home → checklist → Allow all-files access.")
+            runAgent()
+            return
+        }
+        // Small models rarely explore files on their own, so the app looks first and hands over the results.
+        viewModelScope.launch {
+            generating = true
+            val ctx = try {
+                withContext(Dispatchers.IO) { gatherFileContext(text) }
+            } catch (e: Exception) {
+                null
+            } finally {
+                generating = false
+            }
+            if (!ctx.isNullOrBlank()) {
+                userMsg.modelTextOverride = (modelText ?: text) + "\n\n[Phone files — found automatically by the app]\n" + ctx
+                messages += UiMessage(Role.TOOL, ctx)
+            }
+            runAgent()
+        }
+    }
+
+    private val fileWords = Regex(
+        "\\b(file|files|folder|folders|director(y|ies)|storage|download|downloads|document|documents|photo|photos|picture|pictures|" +
+            "image|images|screenshot|screenshots|video|videos|music|song|songs|audio|pdf|pdfs|apk|apks|zip|dcim|camera|whatsapp|" +
+            "find|search|locate|where|list|open|read|show me|look in|in my|on my phone|sdcard|internal)\\b",
+        RegexOption.IGNORE_CASE
+    )
+
+    private fun looksLikeFileRequest(text: String): Boolean =
+        fileWords.containsMatchIn(text) || text.contains("/storage/") || Regex("\\.[a-z0-9]{2,5}\\b").containsMatchIn(text.lowercase())
+
+    /** Finds what the user is talking about: explicit paths, named folders, and index matches. */
+    private suspend fun gatherFileContext(text: String): String {
+        FileIndex.ensureFresh()
+        val root = Environment.getExternalStorageDirectory()
+        val parts = mutableListOf<String>()
+        val used = mutableSetOf<String>()
+
+        // 1) Full paths in the message: list folders, read files.
+        for (m in Regex("/storage/[^\\s\"'`]+").findAll(text)) {
+            val f = File(m.value.trimEnd('.', ',', ')', '?', '!'))
+            if (!used.add(f.absolutePath)) continue
+            when {
+                f.isDirectory -> parts += FileTools.execute(FileAction.ListDir(f.absolutePath))
+                f.isFile -> parts += FileTools.execute(FileAction.Read(f.absolutePath))
+            }
+        }
+
+        // 2) Top-level folders mentioned by name ("my Download folder", "DCIM", "documents").
+        val lower = text.lowercase()
+        root.listFiles()?.filter { it.isDirectory && !it.name.startsWith(".") }?.forEach { d ->
+            val n = d.name.lowercase()
+            val mentioned = Regex("\\b${Regex.escape(n)}s?\\b").containsMatchIn(lower) ||
+                (n == "download" && lower.contains("downloads")) || (n == "dcim" && lower.contains("camera"))
+            if (mentioned && used.add(d.absolutePath)) parts += FileTools.execute(FileAction.ListDir(d.absolutePath))
+        }
+
+        // 3) Whole-phone search by name / type.
+        val hits = FileIndex.search(text, 25).filter { it.path !in used }
+        if (hits.isNotEmpty()) parts += "Best matches on the phone:\n" + FileIndex.format(hits)
+
+        // 4) Nothing specific: give an overview so the model at least knows what's there.
+        if (parts.isEmpty()) {
+            parts += "Phone storage ($root) top-level folders: " + FileIndex.overview()
+        }
+        return parts.joinToString("\n\n").take(9000)
     }
 
     /** Folder where the assistant's code runs: /LocalForge on phone storage, or the app's own folder. */
@@ -418,7 +492,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
         // Templates expect the conversation to start with a user turn.
         while (picked.isNotEmpty() && picked.first().role != "user") picked.removeFirst()
-        return listOf(ChatMessage("system", FileTools.systemPrompt(workspaceRoot, runDir().absolutePath, availableLanguages()))) + picked
+        val overview = if (hasFileAccess) FileIndex.overview().ifBlank { "(not indexed yet)" } else "(no access yet — the user must allow all-files access on the Home tab)"
+        return listOf(ChatMessage("system", FileTools.systemPrompt(workspaceRoot, runDir().absolutePath, availableLanguages(), overview))) + picked
     }
 
     private fun lastUserText(): String =
@@ -455,7 +530,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                     val full = Engine.chat(history(), maxTokens, temperature) { piece ->
                         main.post { reply.text += piece }
                     }
-                    reply.text = full.trim()
+                    reply.text = FileTools.stripThinking(full)
                     if (reply.text.isEmpty()) reply.text = "(no reply)"
                     reply.stats = "%.1f tokens/sec".format(Engine.lastTokensPerSecond)
                     if (looksBroken(reply.text)) {

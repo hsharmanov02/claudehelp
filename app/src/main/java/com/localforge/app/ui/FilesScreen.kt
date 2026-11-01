@@ -33,6 +33,7 @@ import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.OpenInNew
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Save
 import androidx.compose.material3.AlertDialog
@@ -64,6 +65,10 @@ import androidx.compose.ui.unit.sp
 import com.localforge.app.AppViewModel
 import com.localforge.app.data.formatBytes
 import java.io.File
+import android.content.Context
+import android.content.Intent
+import android.webkit.MimeTypeMap
+import androidx.core.content.FileProvider
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -136,7 +141,13 @@ fun FilesScreen(vm: AppViewModel) {
                         .fillMaxWidth()
                         .clip(RoundedCornerShape(16.dp))
                         .background(C.Card)
-                        .clickable { if (f.isDirectory) vm.openDir(f) else vm.openEditor(f) }
+                        .clickable {
+                            when {
+                                f.isDirectory -> vm.openDir(f)
+                                isTextFile(f) -> vm.openEditor(f)
+                                else -> openWithOtherApp(ctx, f) { vm.fileMessage = it }
+                            }
+                        }
                         .padding(start = 14.dp, top = 10.dp, bottom = 10.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
@@ -162,6 +173,11 @@ fun FilesScreen(vm: AppViewModel) {
                                     text = { Text("Ask AI about this file") },
                                     leadingIcon = { Icon(Icons.Filled.AutoAwesome, null) },
                                     onClick = { menu = false; vm.attachFile(f) }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("Open with…") },
+                                    leadingIcon = { Icon(Icons.Filled.OpenInNew, null) },
+                                    onClick = { menu = false; openWithOtherApp(ctx, f) { vm.fileMessage = it } }
                                 )
                                 DropdownMenuItem(
                                     text = { Text("Edit") },
@@ -259,5 +275,29 @@ fun EditorScreen(vm: AppViewModel, file: File) {
                 cursorBrush = SolidColor(C.Accent)
             )
         }
+    }
+}
+
+private val textExtensions = setOf(
+    "txt", "md", "log", "csv", "json", "xml", "yml", "yaml", "ini", "cfg", "conf", "properties", "toml",
+    "py", "js", "mjs", "ts", "tsx", "jsx", "kt", "kts", "java", "c", "h", "cpp", "hpp", "cc", "cs", "go", "rs",
+    "rb", "php", "lua", "pl", "sh", "bash", "sql", "html", "htm", "css", "scss", "gradle", "bat", "srt", "tex"
+)
+
+fun isTextFile(f: File): Boolean {
+    val ext = f.extension.lowercase()
+    return ext in textExtensions || (ext.isEmpty() && f.length() < 256 * 1024)
+}
+
+/** Opens any file (photo, PDF, video, APK, …) in the phone's usual app for it. */
+fun openWithOtherApp(ctx: Context, f: File, onError: (String) -> Unit) {
+    try {
+        val uri = FileProvider.getUriForFile(ctx, ctx.packageName + ".files", f)
+        val mime = MimeTypeMap.getSingleton().getMimeTypeFromExtension(f.extension.lowercase()) ?: "*/*"
+        val intent = Intent(Intent.ACTION_VIEW).setDataAndType(uri, mime)
+            .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
+        ctx.startActivity(Intent.createChooser(intent, "Open ${f.name}").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+    } catch (e: Exception) {
+        onError("No app can open ${f.name}: ${e.message}")
     }
 }

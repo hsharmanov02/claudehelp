@@ -29,6 +29,11 @@ sealed class FileAction {
         override val readOnly = false
         override val label get() = "Delete $path"
     }
+    /** Search the whole phone by name or type. [path] holds the search words. */
+    data class Find(override val path: String) : FileAction() {
+        override val readOnly = true
+        override val label get() = "Find \"$path\""
+    }
     /** Run code on the phone. [path] holds the language ("python" or "shell"). */
     data class Run(override val path: String, val code: String) : FileAction() {
         override val readOnly = false
@@ -40,6 +45,11 @@ object FileTools {
     private const val MAX_READ_CHARS = 12_000
 
     private val simpleTag = Regex("""<(list|read|mkdir|delete)\s+path\s*=\s*"([^"]+)"\s*/?>""", RegexOption.IGNORE_CASE)
+    private val findTag = Regex("""<find\s+(?:query|name|q)\s*=\s*"([^"]+)"\s*/?>""", RegexOption.IGNORE_CASE)
+    private val thinkBlock = Regex("<think>[\\s\\S]*?(</think>|$)", RegexOption.IGNORE_CASE)
+
+    /** Removes <think>…</think> reasoning blocks that Qwen3-style models print. */
+    fun stripThinking(text: String): String = text.replace(thinkBlock, "").replace("</think>", "").trim()
     private val writeTag = Regex("""<write\s+path\s*=\s*"([^"]+)"\s*>\r?\n?([\s\S]*?)</write>""", RegexOption.IGNORE_CASE)
     val runTag = Regex("""<run(?:\s+lang(?:uage)?\s*=\s*"([^"]*)")?\s*>\r?\n?([\s\S]*?)(</run>|$)""", RegexOption.IGNORE_CASE)
     private val fencedBlock = Regex("```([\\w+#.-]*)[ \\t]*\\r?\\n([\\s\\S]*?)```")
@@ -74,7 +84,7 @@ object FileTools {
         "ruby", "rb", "php", "lua", "perl"
     )
 
-    fun systemPrompt(workspace: String, runDir: String, languages: List<String>): String = """
+    fun systemPrompt(workspace: String, runDir: String, languages: List<String>, overview: String): String = """
 You are LocalForge, an expert coding assistant running fully offline on the user's Android phone.
 Always reply in English. Write clear, correct code and explain it briefly in plain English.
 
@@ -91,23 +101,28 @@ Never tell the user to open a terminal, install anything, or run code themselves
 Code runs in the folder $runDir. No input(), no GUI windows. Python has the standard library only.
 For html, the page is shown to the user. For sql, a SQLite database is used.
 
-You can also work with the user's files using these tags, each on its own line:
-<list path="/full/path/to/folder"/>      show what is in a folder
-<read path="/full/path/to/file"/>        read a file
-<write path="/full/path/to/file">
+YOU HAVE FULL ACCESS TO THE USER'S PHONE STORAGE ($workspace). Never say you can't see their files — use these tags:
+<find query="cv pdf"/>                          search the WHOLE phone by name or type (photos, pdf, music, apk, code…)
+<list path="$workspace/Download"/>   show what is in a folder
+<read path="$workspace/Documents/notes.txt"/>   read a text file
+<write path="$workspace/LocalForge/hello.py">
 complete new file content here
-</write>                                 create or overwrite a file
-<mkdir path="/full/path/to/folder"/>     create a folder
-<delete path="/full/path/to/file"/>      delete a file or folder
+</write>                                        create or overwrite a file
+<mkdir path="$workspace/LocalForge/project"/>   create a folder
+<delete path="$workspace/Download/old.zip"/>    delete a file or folder
+Top-level folders on this phone: $overview
 
 Rules:
-- Always use full paths. The user's main folder is $workspace
-- After <run>, <list> or <read>, stop your reply and wait for the result.
+- Always use full paths starting with $workspace
+- After <find>, <run>, <list> or <read>, stop your reply and wait for the result.
+- If results are already given to you under [Phone files], answer from them directly.
 - Only write, create or delete files when the user asks for it.
 - <write> must contain the entire file, never a partial snippet.
+- Answer directly. Do not explain your limitations.
 """.trim()
 
-    fun parse(reply: String): List<FileAction> {
+    fun parse(rawReply: String): List<FileAction> {
+        val reply = stripThinking(rawReply)
         val found = mutableListOf<Pair<Int, FileAction>>()
         for (m in writeTag.findAll(reply)) {
             found += m.range.first to FileAction.Write(m.groupValues[1].trim(), m.groupValues[2].trimEnd())
@@ -122,6 +137,9 @@ Rules:
             }
             code = code.removePrefix("```").removeSuffix("```").trim()
             if (code.isNotEmpty()) found += m.range.first to FileAction.Run(normalizeLang(lang), code)
+        }
+        for (m in findTag.findAll(reply)) {
+            found += m.range.first to FileAction.Find(m.groupValues[1].trim())
         }
         for (m in simpleTag.findAll(reply)) {
             val path = m.groupValues[2].trim()
@@ -161,6 +179,12 @@ Rules:
         val f = File(action.path)
         when (action) {
             is FileAction.Run -> "Run actions are handled by CodeRunner"
+            is FileAction.Find -> {
+                val hits = FileIndex.search(action.path, 30)
+                if (!FileIndex.isReady) "The file index is still being built. Try <list> on a folder instead."
+                else if (hits.isEmpty()) "No files on the phone match \"${action.path}\"."
+                else "Files on the phone matching \"${action.path}\":\n" + FileIndex.format(hits)
+            }
             is FileAction.ListDir -> {
                 if (!f.isDirectory) "Not a folder: ${f.path}"
                 else {
