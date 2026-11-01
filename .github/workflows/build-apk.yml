@@ -22,6 +22,10 @@ jobs:
           distribution: temurin
           java-version: "17"
 
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
       - name: Fetch llama.cpp (pinned release b12025)
         run: git clone --depth 1 --branch b12025 https://github.com/ggml-org/llama.cpp app/src/main/cpp/llama.cpp
 

@@ -1,6 +1,8 @@
 package com.localforge.app.ui
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
@@ -73,7 +75,15 @@ private val fence = Regex("```([\\w+#.-]*)[ \\t]*\\r?\\n([\\s\\S]*?)(```|$)")
 private val writeTagDisplay = Regex("""<write\s+path\s*=\s*"([^"]+)"\s*>[\s\S]*?(</write>|$)""", RegexOption.IGNORE_CASE)
 private val simpleTagDisplay = Regex("""<(list|read|mkdir|delete)\s+path\s*=\s*"([^"]+)"\s*/?>""", RegexOption.IGNORE_CASE)
 
+private val runTagDisplay = Regex("""<run(?:\s+lang(?:uage)?\s*=\s*"([^"]*)")?\s*>\r?\n?([\s\S]*?)(</run>|$)""", RegexOption.IGNORE_CASE)
+private val innerFence = Regex("```[\\w+#.-]*[ \\t]*\\r?\\n?|```")
+
 private fun prettify(text: String): String = text
+    .replace(runTagDisplay) {
+        val lang = it.groupValues[1].ifBlank { "python" }
+        val code = it.groupValues[2].replace(innerFence, "").trim()
+        "\n```$lang\n$code\n```\n"
+    }
     .replace(writeTagDisplay) { "✏️ write ${it.groupValues[1]}" }
     .replace(simpleTagDisplay) {
         val icon = when (it.groupValues[1].lowercase()) { "list" -> "📂"; "read" -> "📄"; "mkdir" -> "📁"; else -> "🗑️" }
@@ -187,7 +197,7 @@ private fun Intro(vm: AppViewModel) {
         )
         Spacer(Modifier.height(10.dp))
         listOf(
-            "Write a Python script that renames all photos in a folder by date",
+            "Write and run a Python script that prints the first 20 prime numbers",
             "List the files in my Download folder",
             "Create a simple HTML to-do app at ${vm.workspaceRoot}/LocalForge/todo.html"
         ).forEach { s ->
@@ -231,7 +241,7 @@ private fun MessageView(vm: AppViewModel, m: UiMessage, onSave: (Segment.Code) -
                     is Segment.Prose -> SelectionContainer {
                         Text(seg.text.trim(), color = C.Text, fontSize = 15.sp, lineHeight = 21.sp, modifier = Modifier.padding(vertical = 4.dp))
                     }
-                    is Segment.Code -> CodeBlock(seg, onSave)
+                    is Segment.Code -> CodeBlock(seg, onSave) { vm.runSnippet(seg.lang, seg.code) }
                 }
             }
             m.actions.forEach { ActionCard(vm, it) }
@@ -247,12 +257,34 @@ private fun MessageView(vm: AppViewModel, m: UiMessage, onSave: (Segment.Code) -
                 if (open) Text(m.text, color = C.Text, fontFamily = FontFamily.Monospace, fontSize = 12.sp, modifier = Modifier.padding(top = 6.dp))
             }
         }
+        Role.RUN -> {
+            val ok = m.text.startsWith("✓")
+            val running = m.text.startsWith("Running")
+            Column(
+                Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(Color(0xFF0B0C0E))
+                    .border(1.dp, if (running) C.Border else if (ok) C.Good else C.Bad, RoundedCornerShape(16.dp))
+                    .padding(12.dp)
+            ) {
+                Text(
+                    if (running) "▶ Running on your phone…" else if (ok) "▶ Output" else "▶ Output (error)",
+                    color = if (running) C.Muted else if (ok) C.Good else C.Bad, fontSize = 12.sp, fontWeight = FontWeight.SemiBold
+                )
+                if (!running) SelectionContainer {
+                    Text(
+                        m.text.substringAfter('\n', ""),
+                        color = Color(0xFFD7E3F4), fontFamily = FontFamily.Monospace, fontSize = 12.sp,
+                        modifier = Modifier.padding(top = 6.dp)
+                    )
+                }
+            }
+        }
         Role.NOTE -> Text(m.text, color = C.Gold, fontSize = 14.sp, modifier = Modifier.fillMaxWidth().padding(4.dp))
     }
 }
 
 @Composable
-private fun CodeBlock(seg: Segment.Code, onSave: (Segment.Code) -> Unit) {
+private fun CodeBlock(seg: Segment.Code, onSave: (Segment.Code) -> Unit, onRun: () -> Unit) {
+    val runnable = seg.lang.lowercase() in setOf("python", "py", "python3", "sh", "bash", "shell")
     val clipboard = LocalClipboardManager.current
     Column(
         Modifier
@@ -268,6 +300,11 @@ private fun CodeBlock(seg: Segment.Code, onSave: (Segment.Code) -> Unit) {
             }
             IconButton(onClick = { onSave(seg) }) {
                 Icon(Icons.Filled.Save, "Save to file", tint = C.Accent, modifier = Modifier.size(20.dp))
+            }
+            if (runnable) {
+                IconButton(onClick = onRun) {
+                    Icon(Icons.Filled.PlayArrow, "Run", tint = C.Good, modifier = Modifier.size(22.dp))
+                }
             }
         }
         SelectionContainer {
@@ -287,6 +324,7 @@ private fun CodeBlock(seg: Segment.Code, onSave: (Segment.Code) -> Unit) {
 @Composable
 private fun ActionCard(vm: AppViewModel, p: PendingAction) {
     val danger = p.action is FileAction.Delete
+    val isRun = p.action is FileAction.Run
     Column(
         Modifier
             .fillMaxWidth()
@@ -296,7 +334,7 @@ private fun ActionCard(vm: AppViewModel, p: PendingAction) {
             .padding(14.dp)
     ) {
         Text(
-            if (danger) "⚠️ Assistant wants to delete" else "Assistant wants to change files",
+            if (danger) "⚠️ Assistant wants to delete" else if (isRun) "▶ Assistant wants to run this code" else "Assistant wants to change files",
             color = if (danger) C.Bad else C.Accent, fontWeight = FontWeight.SemiBold, fontSize = 13.sp
         )
         Text(p.action.label, color = C.Text, fontFamily = FontFamily.Monospace, fontSize = 13.sp)
@@ -314,7 +352,7 @@ private fun ActionCard(vm: AppViewModel, p: PendingAction) {
                 Button(
                     onClick = { vm.approve(p) },
                     colors = ButtonDefaults.buttonColors(containerColor = if (danger) C.Bad else C.Accent)
-                ) { Text(if (danger) "Delete" else "Approve") }
+                ) { Text(if (danger) "Delete" else if (isRun) "Run" else "Approve") }
                 OutlinedButton(onClick = { vm.reject(p) }) { Text("Skip") }
             }
             ActionStatus.DONE -> Text("✓ ${p.result ?: "Working…"}", color = C.Good, fontSize = 13.sp)

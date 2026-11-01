@@ -12,6 +12,8 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.localforge.app.agent.CodeRunner
+import com.localforge.app.agent.TermuxBridge
 import com.localforge.app.agent.FileAction
 import com.localforge.app.agent.FileTools
 import com.localforge.app.data.DeviceInfo
@@ -33,7 +35,7 @@ import kotlinx.coroutines.withContext
 import java.io.File
 
 enum class Tab { HOME, MODELS, CODE, FILES }
-enum class Role { USER, ASSISTANT, TOOL, NOTE }
+enum class Role { USER, ASSISTANT, TOOL, RUN, NOTE }
 enum class ActionStatus { PENDING, DONE, REJECTED }
 
 class PendingAction(val action: FileAction) {
@@ -48,7 +50,10 @@ class DownloadProgress(val file: HfFile) {
     var job: Job? = null
 }
 
-class UiMessage(val role: Role, initial: String, val modelText: String? = null) {
+class UiMessage(val role: Role, initial: String, private val baseModelText: String? = null) {
+    /** Text the model sees instead of [text], if different. */
+    var modelTextOverride: String? = null
+    val modelText: String? get() = modelTextOverride ?: baseModelText
     var text by mutableStateOf(initial)
     var stats by mutableStateOf<String?>(null)
     val actions = mutableStateListOf<PendingAction>()
@@ -320,11 +325,54 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         input = ""
         attachment = null
         messages += UiMessage(Role.USER, display, modelText)
+        stepsLeft = 8
         runAgent()
     }
 
+    /** Folder where the assistant's code runs: /LocalForge on phone storage, or the app's own folder. */
+    private fun runDir(): File =
+        if (hasFileAccess) File(Environment.getExternalStorageDirectory(), "LocalForge")
+        else (getApplication<Application>().getExternalFilesDir("run") ?: File(getApplication<Application>().filesDir, "run"))
+
+    // ---- Code runners ----
+    var termuxInstalled by mutableStateOf(false)
+        private set
+    var termuxAllowed by mutableStateOf(false)
+        private set
+    var runnerMessage by mutableStateOf<String?>(null)
+    /** HTML page the assistant (or the user) ran, shown full-screen. */
+    var htmlPreview by mutableStateOf<File?>(null)
+
+    fun refreshTermux() {
+        val ctx = getApplication<Application>()
+        termuxInstalled = TermuxBridge.isInstalled(ctx)
+        termuxAllowed = TermuxBridge.hasPermission(ctx)
+    }
+
+    fun availableLanguages(): List<String> =
+        if (termuxInstalled && termuxAllowed && hasFileAccess) {
+            listOf("python", "javascript (node)", "typescript", "html", "sql", "shell", "bash") +
+                (CodeRunner.termuxLanguages - setOf("node", "typescript", "bash")).sorted()
+        } else CodeRunner.builtIn
+
+    /** Quick check that Termux answers and which compilers are installed. */
+    fun testTermux() {
+        viewModelScope.launch {
+            runnerMessage = "Testing Termux…"
+            val r = CodeRunner.run(
+                getApplication<Application>(), "bash",
+                "for t in clang go rustc java kotlinc ruby php lua5.4 perl node; do if command -v \$t >/dev/null; then echo \"✓ \$t\"; else echo \"✗ \$t (missing)\"; fi; done",
+                runDir()
+            )
+            runnerMessage = if (r.ok) "Termux works!\n${r.output}" else r.output
+        }
+    }
+
+    /** Model turns left for the current request (each run/read result triggers another turn). */
+    private var stepsLeft = 0
+
     private fun history(): List<ChatMessage> {
-        val budget = ((nCtx - maxTokens - 400).coerceAtLeast(512)) * 3
+        val budget = ((nCtx - maxTokens - 600).coerceAtLeast(512)) * 3
         val picked = ArrayDeque<ChatMessage>()
         var used = 0
         for (m in messages.asReversed()) {
@@ -332,6 +380,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 Role.USER -> ChatMessage("user", m.modelText ?: m.text)
                 Role.ASSISTANT -> if (m.text.isBlank()) null else ChatMessage("assistant", m.text)
                 Role.TOOL -> ChatMessage("user", "[File results]\n${m.text}")
+                Role.RUN -> ChatMessage("user", "[Code output]\n${m.modelText ?: m.text}")
                 Role.NOTE -> null
             } ?: continue
             if (used + msg.content.length > budget && picked.isNotEmpty()) break
@@ -340,15 +389,33 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
         // Templates expect the conversation to start with a user turn.
         while (picked.isNotEmpty() && picked.first().role != "user") picked.removeFirst()
-        return listOf(ChatMessage("system", FileTools.systemPrompt(workspaceRoot))) + picked
+        return listOf(ChatMessage("system", FileTools.systemPrompt(workspaceRoot, runDir().absolutePath, availableLanguages()))) + picked
+    }
+
+    private fun lastUserText(): String =
+        messages.lastOrNull { it.role == Role.USER }?.let { it.modelText ?: it.text } ?: ""
+
+    /** Runs code and adds its output to the chat. Returns true if it ran. */
+    private suspend fun executeRun(run: FileAction.Run, p: PendingAction?): Boolean {
+        val out = UiMessage(Role.RUN, "Running ${run.path}…")
+        messages += out
+        val r = CodeRunner.run(getApplication<Application>(), run.path, run.code, runDir())
+        out.text = (if (r.ok) "✓ " else if (r.timedOut) "⏱ " else "✗ ") + "${r.lang}\n${r.output}"
+        out.modelTextOverride = r.forModel()
+        r.previewFile?.let { htmlPreview = it }
+        p?.result = if (r.ok) "Ran successfully" else if (r.timedOut) "Stopped: took too long" else "Failed — see output"
+        refreshFiles()
+        return true
     }
 
     private fun runAgent() {
+        if (generating) return
         genJob = viewModelScope.launch {
             generating = true
             stopRequested = false
             try {
-                for (step in 0 until 5) {
+                while (stepsLeft > 0) {
+                    stepsLeft--
                     val reply = UiMessage(Role.ASSISTANT, "")
                     messages += reply
                     val full = Engine.chat(history(), maxTokens, temperature) { piece ->
@@ -370,21 +437,38 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                         break
                     }
 
-                    val actions = FileTools.parse(full)
+                    var actions = FileTools.parse(full)
+                    if (actions.none { it is FileAction.Run }) {
+                        FileTools.fallbackRun(lastUserText(), full)?.let { actions = actions + it }
+                    }
                     if (actions.isEmpty()) break
+
+                    var continueLoop = false
                     for (a in actions.filter { !it.readOnly }) {
                         val p = PendingAction(a)
                         reply.actions += p
-                        if (autoApprove && a !is FileAction.Delete && hasFileAccess) approve(p)
+                        if (a is FileAction.Run) {
+                            if (autoApprove) {
+                                p.status = ActionStatus.DONE
+                                executeRun(a, p)
+                                continueLoop = true
+                            }
+                        } else if (autoApprove && a !is FileAction.Delete && hasFileAccess) {
+                            approve(p)
+                        }
                     }
                     val reads = actions.filter { it.readOnly }
-                    if (reads.isEmpty()) break
-                    if (!hasFileAccess) {
-                        messages += UiMessage(Role.NOTE, "The assistant wants to look at your files. Grant all-files access on the Files tab.")
-                        break
+                    if (reads.isNotEmpty()) {
+                        if (!hasFileAccess) {
+                            messages += UiMessage(Role.NOTE, "The assistant wants to look at your files. Grant all-files access on the Files tab.")
+                            break
+                        }
+                        val results = withContext(Dispatchers.IO) { reads.map { FileTools.execute(it) } }
+                        messages += UiMessage(Role.TOOL, results.joinToString("\n\n"))
+                        continueLoop = true
                     }
-                    val results = withContext(Dispatchers.IO) { reads.map { FileTools.execute(it) } }
-                    messages += UiMessage(Role.TOOL, results.joinToString("\n\n"))
+                    if (!continueLoop) break
+                    if (stepsLeft == 0) messages += UiMessage(Role.NOTE, "Paused after several steps. Say \"continue\" to keep going.")
                 }
             } catch (e: CancellationException) {
                 throw e
@@ -398,14 +482,38 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     fun approve(p: PendingAction) {
         if (p.status != ActionStatus.PENDING) return
+        val a = p.action
+        if (a is FileAction.Run) {
+            if (generating) {
+                p.result = "Wait for the current reply to finish."
+                return
+            }
+            p.status = ActionStatus.DONE
+            viewModelScope.launch {
+                executeRun(a, p)
+                // Let the model see the output and fix or report it.
+                if (Engine.isLoaded) {
+                    if (stepsLeft <= 0) stepsLeft = 3
+                    runAgent()
+                }
+            }
+            return
+        }
         if (!hasFileAccess) {
             p.result = "Grant all-files access on the Files tab first."
             return
         }
         p.status = ActionStatus.DONE
         viewModelScope.launch {
-            p.result = withContext(Dispatchers.IO) { FileTools.execute(p.action) }
+            p.result = withContext(Dispatchers.IO) { FileTools.execute(a) }
             refreshFiles()
+        }
+    }
+
+    /** ▶ Run button on a code block: runs it and shows the output (the model sees it next turn). */
+    fun runSnippet(lang: String, code: String) {
+        viewModelScope.launch {
+            executeRun(FileAction.Run(FileTools.normalizeLang(lang), code), null)
         }
     }
 
@@ -501,6 +609,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         refreshPermission()
         refreshModels()
         device = store.deviceInfo()
+        refreshTermux()
     }
 
     /** Heuristic: real replies are mostly letters and spaces; broken models emit digits and symbols. */

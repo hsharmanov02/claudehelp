@@ -110,6 +110,8 @@ fun HomeScreen(vm: AppViewModel) {
             }
         }
 
+        CodeRunnersCard(vm)
+
         RuntimeSettings(vm)
         Spacer(Modifier.height(8.dp))
     }
@@ -216,8 +218,8 @@ private fun RuntimeSettings(vm: AppViewModel) {
 
         Row(verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
-                Text("Auto-apply file changes", color = C.Text, fontWeight = FontWeight.SemiBold)
-                Text("Saves and new folders happen without asking. Deletes always ask.", color = C.Muted, fontSize = 13.sp)
+                Text("Let the AI run code & save files by itself", color = C.Text, fontWeight = FontWeight.SemiBold)
+                Text("It runs, tests and fixes its own code without asking you each time. Deletes always ask.", color = C.Muted, fontSize = 13.sp)
             }
             Switch(checked = vm.autoApprove, onCheckedChange = { vm.updateAutoApprove(it) })
         }

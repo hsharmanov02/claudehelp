@@ -42,6 +42,7 @@ import com.localforge.app.ui.CodeScreen
 import com.localforge.app.ui.EditorScreen
 import com.localforge.app.ui.FilesScreen
 import com.localforge.app.ui.HomeScreen
+import com.localforge.app.ui.HtmlPreviewScreen
 import com.localforge.app.ui.LocalForgeTheme
 import com.localforge.app.ui.ModelsScreen
 
@@ -62,6 +63,7 @@ class MainActivity : ComponentActivity() {
         super.onResume()
         vm.refreshPermission()
         vm.refreshModels()
+        vm.refreshTermux()
     }
 }
 
@@ -79,7 +81,10 @@ fun App(vm: AppViewModel) {
             .imePadding()
     ) {
         val editing = vm.editingFile
-        if (editing != null) {
+        val preview = vm.htmlPreview
+        if (preview != null) {
+            HtmlPreviewScreen(preview) { vm.htmlPreview = null }
+        } else if (editing != null) {
             EditorScreen(vm, editing)
         } else Column(Modifier.fillMaxSize()) {
             Box(Modifier.weight(1f)) {

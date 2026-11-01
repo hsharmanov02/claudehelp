@@ -4,6 +4,7 @@ plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
     id("org.jetbrains.kotlin.plugin.compose")
+    id("com.chaquo.python")
 }
 
 android {
@@ -14,8 +15,8 @@ android {
         applicationId = "com.localforge.app"
         minSdk = 30
         targetSdk = 36
-        versionCode = 3
-        versionName = "1.2"
+        versionCode = 4
+        versionName = "1.3"
 
         ndk {
             abiFilters += listOf("arm64-v8a")
@@ -64,6 +65,13 @@ android {
     packaging {
         // CPU backend variants are loaded from disk at runtime, so native libs must be extracted
         jniLibs.useLegacyPackaging = true
+    }
+}
+
+// Bundled Python 3.12 so the assistant can run and test its own code on the phone.
+chaquopy {
+    defaultConfig {
+        version = "3.12"
     }
 }
 
