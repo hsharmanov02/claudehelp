@@ -119,7 +119,7 @@ def gguf_files(repo: str, token: str | None) -> list[HfFile]:
                 if depth < 1:
                     walk(path, depth + 1)
                 continue
-            if not path.lower().endswith(".gguf") or "mmproj" in path.lower():
+            if not path.lower().endswith(".gguf") or "mmproj" in path.lower() or path.rsplit("/", 1)[-1].lower().startswith("mtp-"):
                 continue
             size = (o.get("lfs") or {}).get("size") or o.get("size") or 0
             m = SPLIT_RE.search(path)
@@ -154,7 +154,7 @@ QUANT_RANK = {
 }
 TRUSTED = ("bartowski", "mradermacher", "unsloth", "lmstudio-community", "quantfactory", "huihui-ai", "mlabonne")
 EXCLUDED = ("vision", "-vl", "mmproj", "embed", "reward", "draft", "audio", "tts", "rerank", "-it-qat-q4",
-            "image", "diffusion", "flux", "-wan", "video", "speech", "whisper", "ocr")
+            "image", "diffusion", "flux", "-wan", "video", "speech", "whisper", "ocr", "mtp-", "-mtp.")
 
 
 def est_speed(file_size: int, pc: PcInfo, active_ratio: float = 1.0) -> float:
