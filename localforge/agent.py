@@ -455,6 +455,7 @@ class App:
             browser_auto = auto or s.get("browserAutoApprove")
             results = []
             did_run = False
+            navigated = False   # page opened in this reply: element numbers after it were guessed blind
             waiting = False   # a card waits for the user: everything after it depends on it, so stop there
             for a in actions:
                 if waiting and not (a.is_browser and not a.browser_read and reply["actions"] and
@@ -481,7 +482,20 @@ class App:
                     results.append(tools.execute(a, self.index))
                     self.done_lookups[key] = True
                     continue
+                if navigated and a.kind in ("click", "type", "press", "js"):
+                    results.append(f"Skipped ({a.label}): you planned it before seeing the new page. "
+                                   "Look at the page above and pick element numbers from it.")
+                    continue
                 if a.is_browser and a.browser_read:
+                    if a.kind in ("browse", "search"):
+                        navigated = True
+                    if a.kind == "browse" and os.path.normcase(a.path) in getattr(self, "fresh_pages", set()):
+                        self.fresh_pages.discard(os.path.normcase(a.path))
+                        try:
+                            self.browser.ensure()
+                        except Exception:
+                            pass
+                        self._fresh_storage()
                     self._set_status(a.label + "…")
                     r = tools.execute_browser(a, self.browser)
                     self._note_block(a, r)
@@ -514,7 +528,7 @@ class App:
                     pa["status"] = "done"
                     pa["result"] = tools.execute(a, self.index)
                     results.append(pa["result"])
-                    self._files_changed()
+                    self._files_changed(a)
                 else:
                     waiting = True
             if self.repeats >= 2 and self.steps_left > 1 and not waiting:
@@ -570,11 +584,7 @@ class App:
         name = re.sub(r"[^A-Za-z0-9_-]+", "-", (m.group(1) if m else "page").strip())[:40].strip("-") or "page"
         f = d / f"{name}-{int(time.time())}.html"
         f.write_text(a.content, encoding="utf-8")
-        try:   # a fresh page starts with fresh saved data (localStorage from earlier test pages confuses tests)
-            self.browser.send("Storage.clearDataForOrigin", {"origin": "file://",
-                                                             "storageTypes": "local_storage,session_storage,indexeddb"})
-        except Exception:
-            pass
+        self._fresh_storage()
         report = self.browser.open_page(str(f))
         ok = "[error]" not in report and "Uncaught" not in report
         return runner.RunResult("html (browser)", ok, False,
@@ -630,7 +640,7 @@ class App:
                 else:
                     pa["result"] = tools.execute(a, self.index)
                     self._msg("tool", pa["result"])
-                    self._files_changed()
+                    self._files_changed(a)
                 # Carry on once every card in that reply has been answered.
                 waiting = msg and any(x["status"] == "pending" for x in msg["actions"])
                 if self.engine.loaded and not waiting:
@@ -661,9 +671,21 @@ class App:
         """After clicks or typing the page is different, so reading or reopening it is allowed again."""
         self.done_lookups = {k: v for k, v in self.done_lookups.items() if k[0] not in ("browse", "page", "fetch")}
 
-    def _files_changed(self):
-        """After a write/mkdir/delete, folder listings and file reads may differ, so allow them again."""
-        self.done_lookups = {k: v for k, v in self.done_lookups.items() if k[0] not in ("list", "read", "find")}
+    def _files_changed(self, a=None):
+        """After a write/mkdir/delete, folder listings, file reads and pages may differ, so allow them again."""
+        self.done_lookups = {k: v for k, v in self.done_lookups.items()
+                             if k[0] not in ("list", "read", "find", "browse", "page")}
+        if a is not None and a.kind == "write" and a.path.lower().endswith((".html", ".htm")):
+            self.fresh_pages = getattr(self, "fresh_pages", set()) | {os.path.normcase(a.path)}
+
+    def _fresh_storage(self):
+        """A newly written page starts with no saved data left over from earlier tests."""
+        try:
+            if self.browser.running:
+                self.browser.send("Storage.clearDataForOrigin", {"origin": "file://",
+                                                                 "storageTypes": "local_storage,session_storage,indexeddb"})
+        except Exception:
+            pass
 
     @staticmethod
     def _add_to_batch(pa, a: tools.Action):

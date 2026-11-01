@@ -104,6 +104,7 @@ Code runs in the folder {work}. No input(), no GUI windows. For sql, SQLite is u
 javascript runs INSIDE YOUR BROWSER (full DOM, console.log output and errors come back to you; await works at top level).
 html opens IN YOUR BROWSER: you get the page text, its buttons/inputs as numbered elements, and every console error.
 Then TEST IT: use <click n="..."/>, <type n="...">...</type> and <js>return ...</js> on the page, read the result, fix bugs and run again until it really works.
+To test an html file you wrote, use <browse url="FULL PATH"/>, read the page, THEN plan clicks from the numbers you see.
 Use node only for scripts that need files or Node modules (only if node is in the list above).
 
 YOU HAVE ACCESS TO THE FILES ON THIS PC. Never say you can't see their files - use these tags:
@@ -182,7 +183,10 @@ def parse(raw: str) -> list[Action]:
     for m in FIND.finditer(reply):
         found.append((m.start(), Action("find", m.group(1).strip())))
     for m in SIMPLE.finditer(reply):
-        found.append((m.start(), Action(m.group(1).lower(), m.group(2).strip())))
+        kind, path = m.group(1).lower(), m.group(2).strip()
+        if kind == "open" and (path.lower().endswith((".html", ".htm")) or path.lower().startswith(("http://", "https://"))):
+            kind = "browse"     # web pages open in LocalForge's own browser, where the AI can see and test them
+        found.append((m.start(), Action(kind, path)))
     for m in B_SEARCH.finditer(reply):
         found.append((m.start(), Action("search", m.group(1).strip())))
     for m in B_BROWSE.finditer(reply):
