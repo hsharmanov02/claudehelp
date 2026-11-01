@@ -38,8 +38,20 @@ EXTRACT_JS = r"""(q) => {
     return t;
   };
   const here = location.href.split('#')[0];
-  const link = el => { const a = [...el.querySelectorAll('a[href]')].find(a => clean(a.innerText).length > 8 && a.href.startsWith('http') && a.href.split('#')[0] !== here);
-    return a ? ' -> ' + a.href.slice(0, 160) : ''; };
+  const link = el => {
+    const ok = a => a.href.startsWith('http') && a.href.split('#')[0] !== here;
+    const all = [...el.querySelectorAll('a[href]')].filter(ok);
+    const a = all.find(a => clean(a.innerText).length > 8);
+    if (!a) return '';
+    // Other links in the row (e.g. "161 comments") so the model can open the right one.
+    const more = []; const seen = new Set([a.href]);
+    for (const b of all) {
+      const t = clean(b.innerText);
+      if (seen.has(b.href) || t.length < 3 || BUTTONISH.test(t) || more.length >= 2) continue;
+      if (!/\d|comment|review|discuss|detail/i.test(t)) continue;
+      seen.add(b.href); more.push(t.slice(0, 30) + ': ' + b.href.slice(0, 120));
+    }
+    return ' -> ' + a.href.slice(0, 160) + (more.length ? ' (also ' + more.join('; ') + ')' : ''); };
   const BUTTONISH = /^(buy|sell|select|add|add to (cart|basket|bag)|view|details|more|opens in a new (window|tab)|opens in a new window or tab|watch|compare|share|save)$/i;
   const words = clean(q).toLowerCase().split(' ').filter(Boolean);
   const score = el => words.length ? words.filter(w => el.innerText.toLowerCase().includes(w)).length : 0;
@@ -666,18 +678,21 @@ class Browser:
         self.ensure()
         out = self.eval(f"({EXTRACT_JS})({json.dumps(query)})", 20) or ""
         # Remember each numbered list row's link: models often write <click n="3"/> meaning "row 3".
-        self._extract_rows = {int(m.group(1)): m.group(2) for m in re.finditer(r"^(\d+)\. .*? -> (https?://\S+)$", out, re.M)}
+        self._extract_rows = {int(m.group(1)): m.group(2) for m in re.finditer(r"^(\d+)\. .*? -> (https?://\S+)", out, re.M)}
         self._extract_url = self.url
         self._last_read = "extract"
         return out or "No tables or repeated lists found on this page. Read it with <page/> or use <js>."
 
-    def extract_link(self, n: int):
-        """Row n's link from the last extract on this page, but only when page element n doesn't exist."""
+    def extract_link(self, n: int, row: bool = False):
+        """Row n's link from the last extract on this page: for <click row="n"/>, or for <click n="n"/>
+        only when page element n doesn't exist (element numbers win, so the model's [17] stays [17])."""
         rows = getattr(self, "_extract_rows", {})
         if n not in rows or getattr(self, "_extract_url", None) != self.url:
+            if row:
+                raise RuntimeError(f"There's no row {n} in the last extracted data for this page. Use <extract/> again.")
             return None
-        if getattr(self, "_last_read", "") == "extract":
-            return rows[n]          # the model's latest view of this page was the extracted rows
+        if row:
+            return rows[n]
         try:
             if self.eval(f"!!document.querySelector('[data-lf-id=\"{int(n)}\"]')"):
                 return None

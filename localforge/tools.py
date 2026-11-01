@@ -43,7 +43,7 @@ class Action:
             "search": f'Search the web for "{self.path}"', "fetch": f"Fetch {self.path} through the browser", "browse": f"Open {self.path} in the browser",
             "page": "Read the browser page",
             "extract": "Extract tables and lists from the page" + (f' ("{self.path}")' if self.path else ""), "scroll": f"Scroll the page {self.path}",
-            "click": f"Click [{self.path}] in the browser", "press": f"Press {self.path} in the browser",
+            "click": (f"Open row {self.path} of the extracted data" if self.extra == "row" else f"Click [{self.path}] in the browser"), "press": f"Press {self.path} in the browser",
             "type": f'Type "{self.content[:60]}" into [{self.path}]' + (" and submit" if self.extra == "submit" else ""),
             "js": f"Run a script on the browser page ({len(self.content.splitlines())} lines)",
         }[self.kind]
@@ -67,7 +67,7 @@ B_FETCH = re.compile(r'<fetch\s+(?:url|href)\s*=\s*"([^"]+)"\s*/?>', re.I)
 B_PAGE = re.compile(r'<page\s*/?>', re.I)
 B_EXTRACT = re.compile(r'<extract(?:\s+(?:query|q|what|about)\s*=\s*"([^"]*)")?\s*/?>', re.I)
 B_SCROLL = re.compile(r'<scroll(?:\s+(?:dir|direction)\s*=\s*"([^"]*)")?\s*/?>', re.I)
-B_CLICK = re.compile(r'<click\s+(?:n|id|element)\s*=\s*"?(\d+)"?\s*/?>', re.I)
+B_CLICK = re.compile(r'<click\s+(n|id|element|row)\s*=\s*"?(\d+)"?\s*/?>', re.I)
 B_PRESS = re.compile(r'<press\s+key\s*=\s*"([^"]+)"\s*/?>', re.I)
 B_TYPE = re.compile(r'<type\s+(?:n|id|element)\s*=\s*"?(\d+)"?(\s+submit\s*=\s*"?(?:true|yes|1)"?)?\s*>([\s\S]*?)</type>', re.I)
 B_JS = re.compile(r'<js>\r?\n?([\s\S]*?)</js>', re.I)
@@ -129,6 +129,7 @@ YOU HAVE YOUR OWN WEB BROWSER (the user watches it live in the Browser tab and s
 <page/>                                       read the current page again
 <extract query="WHAT YOU NEED"/>              get the page's tables and lists (results, products, prices, stories) as clean rows with links: USE THIS FIRST to pull data off a page
 <click n="12"/>                               click element [12]
+<click row="3"/>                              open row 3 of the last <extract> results
 <type n="5">text to enter</type>              fill input [5]; add submit="true" to press Enter after
 <press key="Enter"/>                          press a key (Enter, Tab, Escape, PageDown, ArrowDown...)
 <scroll dir="down"/>                          scroll down (or up) and read what is visible
@@ -159,6 +160,7 @@ Rules:
 - Do any sum, average or percentage in code, never in your head.
 - Sorting, "top N", filtering, sums and averages over web data must be done with <run lang="python"> over the
   extracted rows (paste the rows into the code). Only use links that appear in the page results.
+- If the user asks to open, click or go to something (a section, tab, link, row), do that click/browse FIRST and answer from the new page. Never present data from the current page as if it came from the page they asked for.
 - To pull data off a web page, use <extract/> first. Only if that misses something, use <js> with
   document.querySelectorAll (check real class names with a small <js> first). Never retype page text into code.
 - A <js> script's result is its last expression (like the browser console), e.g. end with: data
@@ -216,7 +218,7 @@ def parse(raw: str) -> list[Action]:
     for m in B_SCROLL.finditer(reply):
         found.append((m.start(), Action("scroll", (m.group(1) or "down").strip().lower())))
     for m in B_CLICK.finditer(reply):
-        found.append((m.start(), Action("click", m.group(1))))
+        found.append((m.start(), Action("click", m.group(2), extra="row" if m.group(1).lower() == "row" else "")))
     for m in B_PRESS.finditer(reply):
         found.append((m.start(), Action("press", m.group(1).strip())))
     for m in B_TYPE.finditer(reply):
@@ -380,7 +382,8 @@ def execute_browser(a: Action, browser) -> str:
             return r + blocked_hint(r)
         if a.kind == "extract":
             return ("Data on the page (tables and repeated lists; ▲/▼ = shown as up/down by colour or icon). "
-                    "To open a row, use <browse url=\"its link\"/>:\n" + browser.extract(a.path))
+                    "To open a row's main link use <click row=\"N\"/> (N = the row's number here; NOT the same as page element numbers). "
+                    "For another link in a row (e.g. its comments), use <browse url=\"that link\"/>:\n" + browser.extract(a.path))
         if a.kind == "page":
             r = browser.describe()
             return r + blocked_hint(r)
@@ -398,7 +401,7 @@ def execute_browser(a: Action, browser) -> str:
                 " if (r && r.bottom > 0 && r.top < innerHeight && n.textContent.trim()) t.push(n.textContent.trim()); }"
                 " return t.join(' ').slice(0, 5000); })()")
         if a.kind == "click":
-            link = browser.extract_link(int(a.path))
+            link = browser.extract_link(int(a.path), row=(a.extra == "row"))
             if link:     # the model meant row N of the last <extract>, not page element N
                 browser.navigate(link)
                 r = f"Opened row {a.path} of the extracted data ({link}). Now:\n" + browser.describe(4000)

@@ -61,6 +61,8 @@ class App:
         self.steps_left = 0
         self.done_lookups = {}
         self.repeats = 0
+        self.moved = False         # clicked, typed or opened a page for this request
+        self.move_nudged = False
         self.blocked_sites = set()
         self.ran_code = False
         self.failed_code = set()
@@ -291,6 +293,8 @@ class App:
         self.failed_code = set()
         self.done_lookups = {}   # tool calls already made for this request -> result
         self.repeats = 0
+        self.moved = False
+        self.move_nudged = False
         self.blocked_sites = set()
         self.ran_code = False
         self.failed_code = set()
@@ -513,6 +517,8 @@ class App:
                 self._msg("tool", "A tool tag in your reply wasn't understood, so nothing was done. "
                                   "Write it exactly like the examples, e.g. <search query=\"words\"/>.")
                 continue
+            if not actions and self._skipped_navigation():
+                continue
             if not actions:
                 self._check_claims(reply)
                 if re.search(r"<run\b", full, re.I):
@@ -572,7 +578,7 @@ class App:
                             pass
                         self._fresh_storage()
                     self._set_status(a.label + "…")
-                    r = tools.execute_browser(a, self.browser)
+                    r = self._exec_browser(a, self.browser)
                     self._note_block(a, r)
                     if a.kind == "browse" and DATA_WORDS.search(self._last_user_text()) and "[LocalForge note]" not in r:
                         r += "\n\n" + self._auto_extract()
@@ -594,7 +600,7 @@ class App:
                 if a.is_browser and browser_auto:
                     self._set_status(a.label + "…")
                     pa["status"] = "done"
-                    r = tools.execute_browser(a, self.browser)
+                    r = self._exec_browser(a, self.browser)
                     r += self._extract_if_empty(a, r)
                     self._page_changed()
                     self._note_block(a, r)
@@ -699,7 +705,7 @@ class App:
                     for st in d["steps"]:
                         sa = tools.Action(st["kind"], st["path"], st["content"], st.get("extra", ""))
                         self._set_status(sa.label + "…")
-                        r = tools.execute_browser(sa, self.browser)
+                        r = self._exec_browser(sa, self.browser)
                         r += self._extract_if_empty(sa, r)
                         self._note_js(sa, r)
                         if r.startswith("Browser error"):
@@ -715,7 +721,7 @@ class App:
                     self._page_changed()
                 elif a.is_browser:
                     self._set_status(a.label + "…")
-                    r = tools.execute_browser(a, self.browser)
+                    r = self._exec_browser(a, self.browser)
                     r += self._extract_if_empty(a, r)
                     self._note_block(a, r)
                     self._page_changed()
@@ -735,7 +741,7 @@ class App:
                     if qa.read_only:
                         outs.append(tools.execute(qa, self.index))
                     elif qa.browser_read:
-                        outs.append(tools.execute_browser(qa, self.browser))
+                        outs.append(self._exec_browser(qa, self.browser))
                     else:
                         outs.append(f"Not done yet: {qa.label}. Ask for it again if you still need it.")
                         break
@@ -806,6 +812,34 @@ class App:
 
     CLAIMS = re.compile(r"ran successfully|run successfully|executed successfully|server received|"
                         r"(saved|written|created) (it |the file |the csv |successfully)|tests? (all )?pass", re.I)
+
+    def _exec_browser(self, a):
+        if a.kind in ("browse", "click", "type", "press"):
+            self.moved = True
+        return tools.execute_browser(a, self.browser)
+
+    NAV_ASK = re.compile(r"\b(open|click|go to|go into|navigate|visit|switch to|press)\b", re.I)
+
+    def _skipped_navigation(self) -> bool:
+        """The user asked to open/click something but the model answered without moving: send it back once."""
+        if self.moved or self.move_nudged:
+            return False
+        asked, used_browser = "", False
+        for m in reversed(self.messages):
+            if m["role"] == "user":
+                asked = m["text"]
+                used_browser = used_browser or "looking at this page in your browser" in (m.get("modelText") or "")
+                break
+            if m["role"] == "tool" and re.match(r"(Browser page|Data on the page|Search results|Scrolled)", m["text"]):
+                used_browser = True
+        if not used_browser or not self.NAV_ASK.search(asked[:400]):
+            return False
+        self.move_nudged = True
+        self._msg("tool", "The user asked you to open or click something, but you haven't opened, clicked or "
+                          "navigated anything yet, so your answer is about the wrong page. Do that step first "
+                          "(<click n=\"...\"/> on the right element, or <browse url=\"...\"/>), then answer from "
+                          "the new page.")
+        return True
 
     def _check_claims(self, reply):
         """Warns the user when the answer claims success that no tool output in this request shows,
