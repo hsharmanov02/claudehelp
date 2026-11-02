@@ -5,7 +5,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from localforge import agent, config, hf
 
 MODELS = [("mradermacher/Huihui-Qwen3.5-2B-abliterated-GGUF", "Huihui-Qwen3.5-2B-abliterated.Q4_K_M.gguf"),
-          ("bartowski/mlabonne_Qwen3-1.7B-abliterated-GGUF", "mlabonne_Qwen3-1.7B-abliterated-Q4_K_M.gguf")]
+          ("mradermacher/Huihui-Qwen3.5-9B-abliterated-GGUF", "Huihui-Qwen3.5-9B-abliterated.Q4_K_M.gguf")]
 
 def fetch(repo, name):
     t = config.models_dir() / name
