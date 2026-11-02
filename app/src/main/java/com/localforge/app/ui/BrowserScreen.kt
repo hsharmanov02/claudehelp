@@ -33,6 +33,7 @@ import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.ArrowForward
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.TableChart
 import androidx.compose.material3.AlertDialog
@@ -82,6 +83,8 @@ fun BrowserScreen(vm: AppViewModel) {
     var address by remember { mutableStateOf("") }
     var editing by remember { mutableStateOf(false) }
     var extracted by remember { mutableStateOf<String?>(null) }
+    var showMods by remember { mutableStateOf(false) }
+    val modCount = run { b.modsVersion; b.modsFor(b.url).size }
 
     BackHandler(enabled = vm.pagePanelOpen || b.canGoBack) {
         if (vm.pagePanelOpen) vm.pagePanelOpen = false else b.back()
@@ -107,6 +110,13 @@ fun BrowserScreen(vm: AppViewModel) {
             IconButton(onClick = {
                 scope.launch { extracted = try { b.extract("") } catch (e: Exception) { "Couldn't read the page: ${e.message}" } }
             }, enabled = b.hasPage) { Icon(Icons.Filled.TableChart, "Extract data", tint = if (b.hasPage) C.Accent else C.Border) }
+            if (modCount > 0) IconButton(onClick = { showMods = true }) {
+                Box(contentAlignment = Alignment.Center) {
+                    Icon(Icons.Filled.Edit, "Saved edits", tint = C.Gold)
+                    Text("$modCount", color = C.Bg, fontSize = 9.sp, fontWeight = FontWeight.Bold,
+                        modifier = Modifier.align(Alignment.TopEnd).size(13.dp).clip(RoundedCornerShape(50)).background(C.Gold))
+                }
+            }
         }
         if (b.loading) LinearProgressIndicator(progress = { b.progress / 100f }, modifier = Modifier.fillMaxWidth().height(2.dp), color = C.Accent)
 
@@ -187,6 +197,30 @@ fun BrowserScreen(vm: AppViewModel) {
     }
 
     b.picker?.let { PickerDialog(it) { b.picker = null } }
+    if (showMods) {
+        b.modsVersion
+        val mods = b.modsFor(b.url)
+        AlertDialog(
+            onDismissRequest = { showMods = false },
+            title = { Text("Saved edits for ${b.siteOf(b.url)}") },
+            text = {
+                if (mods.isEmpty()) Text("No saved edits for this site.", color = C.Muted)
+                else Column(Modifier.heightIn(max = 420.dp).verticalScroll(rememberScrollState())) {
+                    mods.forEach { m ->
+                        Column(Modifier.fillMaxWidth().padding(vertical = 6.dp).clip(RoundedCornerShape(12.dp)).background(C.CardInner).padding(12.dp)) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text(m.note.ifBlank { "Edit" }, color = C.Text, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
+                                TextButton(onClick = { b.removeMod(m); if (b.modsFor(b.url).isEmpty()) showMods = false }) { Text("Remove", color = C.Bad) }
+                            }
+                            Text(m.js.take(200), color = C.Muted, fontFamily = FontFamily.Monospace, fontSize = 11.sp, maxLines = 4)
+                        }
+                    }
+                    Text("These run every time you open this site. Reload to apply changes.", color = C.Muted, fontSize = 12.sp, modifier = Modifier.padding(top = 6.dp))
+                }
+            },
+            confirmButton = { TextButton(onClick = { showMods = false }) { Text("Close") } }
+        )
+    }
     extracted?.let { text ->
         val clipboard = LocalClipboardManager.current
         AlertDialog(
