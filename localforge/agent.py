@@ -397,10 +397,12 @@ class App:
         tokens = s.get("nCtx") - reply_room - len(sys_prompt) / self.CHARS_PER_TOKEN - 300
         budget = int(max(600, tokens * self.CHARS_PER_TOKEN * shrink))
         picked, used, newest_result = [], 0, True
+        current = next((m for m in reversed(self.messages) if m["role"] == "user"), None)
+        recap = self._recap()
         for m in reversed(self.messages):
             role = m["role"]
             if role == "user":
-                msg = {"role": "user", "content": m["modelText"] or m["text"]}
+                msg = {"role": "user", "content": (recap if m is current else "") + (m["modelText"] or m["text"])}
             elif role == "assistant":
                 if not m["text"].strip():
                     continue
@@ -438,6 +440,28 @@ class App:
                 merged[-1] = {"role": "user", "content": merged[-1]["content"] +
                               f"\n\n[The user's question: {q}]\nIf the results above answer it, answer it now, fully and directly."}
         return [{"role": "system", "content": sys_prompt}] + merged
+
+    RECAP_MESSAGES = 8
+
+    def _recap(self) -> str:
+        """The user's earlier messages, numbered, put in front of the current one.
+
+        Models given the whole chat still mix up which message came last: asked "what did I just ask?",
+        they quote the first message, or whichever one held facts. A short numbered list with the previous
+        message marked makes the order unmistakable, even for small models.
+        """
+        users = [m for m in self.messages if m["role"] == "user"]
+        earlier = users[:-1][-self.RECAP_MESSAGES:]
+        if not earlier:
+            return ""
+        skipped = len(users) - 1 - len(earlier)
+        lines = []
+        for i, m in enumerate(earlier, start=skipped + 1):
+            t = re.sub(r"\s+", " ", m["text"]).strip()
+            t = t if len(t) <= 200 else t[:200] + "…"
+            lines.append(f'{i}. "{t}"' + ("  <- my previous message, the one just before this one" if m is earlier[-1] else ""))
+        return ("[Chat so far. My earlier messages, oldest first:\n" + "\n".join(lines) +
+                "\nYour replies to them are above.]\nMy new message: ")
 
     def _chat(self, on_piece, reply):
         """Asks the model, shrinking the history and retrying if it doesn't fit in the context."""

@@ -2,7 +2,6 @@ name: Memory diagnostic
 on: push
 jobs:
   diag:
-    if: false
     runs-on: ubuntu-latest
     timeout-minutes: 40
     steps:
