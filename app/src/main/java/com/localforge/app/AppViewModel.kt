@@ -596,8 +596,13 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         val lastUser = all.indexOfLast { it.role == Role.USER }.coerceAtLeast(0)
         val picked = sortedMapOf<Int, ChatMessage>()
 
-        // 1) The user's current question: always kept.
-        all.getOrNull(lastUser)?.let { m -> toChat(m, true, 0)?.let { c ->
+        // 1) The user's current question: always kept. When it refers back ("what did I just ask?"), a note naming
+        // the previous message goes after it: given the whole chat, models still mix up the order and quote the first
+        // message, or whichever one held facts.
+        val note = all.getOrNull(lastUser)?.takeIf { it.role == Role.USER && refersBack.containsMatchIn(it.text) }
+            ?.let { previousMessageNote(all, lastUser) } ?: ""
+        all.getOrNull(lastUser)?.let { m -> toChat(m, true, 0)?.let { c0 ->
+            val c = if (note.isEmpty()) c0 else ChatMessage(c0.role, c0.content + note)
             val fit = if (cost(c) <= left) c else ChatMessage(c.role, cutToTokens(c.content, maxOf(200, left / 2)))
             left -= cost(fit); picked[lastUser] = fit
         } }
@@ -654,6 +659,27 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 "\n\n[The user's question: $q]\nIf the results above answer it, answer it now, fully and directly.")
         }
         return listOf(ChatMessage("system", sys)) + merged
+    }
+
+    /** The user is asking about an earlier message: "what was my last prompt", "what did I just ask"… */
+    private val refersBack = Regex(
+        "\\b(previous|last|earlier|before|prior|first)\\b.{0,30}\\b(prompt|question|message|request|ask|asked|said|typed|wrote)|" +
+            "what (did|was) i (just )?(ask|say|said|tell|type|write|want)|" +
+            "\\b(remind me what|you said|i said|i asked|i told you|i just asked)\\b", RegexOption.IGNORE_CASE)
+
+    /** Names the user's message before [lastUser], and lists the ones before it ("" if there are none). */
+    private fun previousMessageNote(all: List<UiMessage>, lastUser: Int): String {
+        val users = all.take(lastUser).filter { it.role == Role.USER }
+        if (users.isEmpty()) return ""
+        fun short(m: UiMessage) = m.text.replace(Regex("\\s+"), " ").trim().let { if (it.length > 200) it.take(200) + "…" else it }
+        val sb = StringBuilder("\n\n[Note from the app: my previous message, the one just before this one, was: \"${short(users.last())}\"")
+        val earlier = users.dropLast(1).takeLast(7)
+        if (earlier.isNotEmpty()) {
+            val first = users.size - earlier.size
+            sb.append(". My earlier messages, oldest first: ")
+            sb.append(earlier.mapIndexed { i, m -> "${first + i}. \"${short(m)}\"" }.joinToString(" "))
+        }
+        return sb.append("]").toString()
     }
 
     private fun lastUserText(): String =
