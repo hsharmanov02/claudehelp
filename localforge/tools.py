@@ -211,6 +211,8 @@ Rules:
   Save every finding the user will need (names, prices, links, answers) with <note>...</note> as soon as you see it.
   "Cheapest", "best", "highest" etc.: first get EVERY option's value (open each one if the list doesn't show it),
   note each, then choose. Never call the first option the cheapest without checking the others.
+  Element numbers change on every page: [2] here is NOT item 2 of a list you saw before. To act on an item, open its own
+  page first (<click text="its name"/>), check the page title, then press the button there.
   Prefer <fill> for forms, <sitesearch> on shops/sites and <click text="..."/> for buttons: they can't pick the wrong number.
   Never write the final answer in the same reply as an action: you haven't seen the result yet.
   Stuck after two tries? Change approach: the site's own search box, a direct URL with the words in it
@@ -503,11 +505,17 @@ def execute_browser(a: Action, browser) -> str:
         if a.kind == "click" and a.extra == "text":
             before = browser.signature()
             hit = browser.click_text(a.path)
+            if hit.startswith("SELECTED:"):
+                return f'Chose "{hit[9:]}" in the dropdown. Now:\n' + browser.describe(4000)
             r = f'Clicked "{hit}". Now:\n' + browser.describe(4000)
             return _unchanged(browser, before, f'clicking "{hit}"') + r + blocked_hint(r)
         if a.kind == "fill":
             before = browser.signature()
             done = browser.fill_form(form_pairs(a.content), submit=(a.extra == "submit"))
+            if a.extra == "submit" and "Couldn't find a field for" in done:
+                left = re.search(r"Couldn't find a field for: (.*?)(\. Fields on the page|$)", done)
+                done += ("\nThose fields weren't on that page. If the new page below has them, fill them NOW with <fill> "
+                         f"before pressing anything else: {left.group(1) if left else ''}")
             warn = _unchanged(browser, before, "submitting") if a.extra == "submit" and "Couldn't" not in done else ""
             return warn + done + "\nNow:\n" + browser.describe(4000)
         if a.kind == "sitesearch":
@@ -522,14 +530,17 @@ def execute_browser(a: Action, browser) -> str:
                 r = f"Opened row {a.path} of the extracted data ({link}). Now:\n" + browser.describe(4000)
                 return r + blocked_hint(r)
             before = browser.signature()
+            on = getattr(browser, "title", "") or ""
+            what = browser.element_label(int(a.path))
             browser.click_element(int(a.path))
-            r = "Clicked. Now:\n" + browser.describe(4000)
+            r = (f'Clicked [{a.path}] "{what}" on the page "{on[:60]}". Now:\n' if what else "Clicked. Now:\n") + browser.describe(4000)
             return _unchanged(browser, before, f"clicking [{a.path}]") + r + blocked_hint(r)
         if a.kind == "type":
             before = browser.signature()
             browser.fill(int(a.path), a.content, submit=(a.extra == "submit"))
             warn = _unchanged(browser, before, "submitting") if a.extra == "submit" else ""
-            return warn + ("Typed and submitted. Now:\n" if a.extra == "submit" else "Typed. Now:\n") + browser.describe(4000)
+            return warn + ("Typed and submitted. Now:\n" if a.extra == "submit" else
+                           "Typed (NOT submitted yet: <press key=\"Enter\"/> or click the search/submit button next). Now:\n") + browser.describe(4000)
         if a.kind == "press":
             before = browser.signature()
             browser.key(a.path)

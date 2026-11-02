@@ -182,6 +182,13 @@ CLICK_TEXT_JS = r"""(want) => {
     return r.width > 2 && r.height > 2 && s.visibility !== 'hidden' && s.display !== 'none' && s.opacity !== '0'; };
   const norm = t => (t || '').toLowerCase().replace(/\s+/g, ' ').trim();
   const w = norm(want); let best = null, bs = 0;
+  // An option inside a dropdown: choose it (clicking a <select> never picks anything in a headless browser).
+  for (const sel of document.querySelectorAll('select')) {
+    if (!vis(sel)) continue;
+    const o = [...sel.options].find(o => norm(o.text) === w) || [...sel.options].find(o => norm(o.text).startsWith(w) && w.length > 2);
+    if (o) { sel.value = o.value; sel.dispatchEvent(new Event('input', {bubbles: true})); sel.dispatchEvent(new Event('change', {bubbles: true}));
+      return 'SELECTED:' + o.text.trim(); }
+  }
   const sel = 'button,a[href],input[type=submit],input[type=button],[role=button],[role=link],[role=tab],[role=menuitem],[role=option],summary,label,[onclick]';
   for (const el of document.querySelectorAll(sel)) {
     if (!vis(el)) continue;
@@ -984,6 +991,8 @@ class Browser:
         """Clicks the button/link whose visible text best matches. Returns what was clicked."""
         self.ensure()
         hit = self.eval(f"({CLICK_TEXT_JS})({json.dumps(text)})")
+        if hit and hit.startswith("SELECTED:"):
+            return hit
         if not hit:
             raise RuntimeError(f'No button or link with the text "{text}" on this page. Use <page find="..."/> or <page/>.')
         self._click_hit()
@@ -1030,6 +1039,14 @@ class Browser:
         self.key("enter")
         self.wait_loaded(10)
         return True
+
+    def element_label(self, n: int) -> str:
+        try:
+            return self.eval(f"""(() => {{ const el = document.querySelector('[data-lf-id="{int(n)}"]'); if (!el) return '';
+                return (el.getAttribute('aria-label') || el.innerText || el.value || el.placeholder || el.title || el.tagName)
+                       .trim().replace(/\\s+/g, ' ').slice(0, 60); }})()""") or ""
+        except Exception:
+            return ""
 
     def click_element(self, n: int):
         x, y = self._center(n)

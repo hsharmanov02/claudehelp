@@ -582,6 +582,8 @@ class App:
             self.last_reply = re.sub(r"\s+", " ", reply["text"]).strip()
             if same:
                 self.repeats += 1
+                self.steps_left = min(self.steps_left, 2)    # stuck in a loop: get an answer out of it now
+                self.rethink = True
                 self._msg("tool", "You sent exactly the same reply as before. Don't repeat it. "
                                   "Answer the user now with what you have.")
                 if self.repeats >= 3:
@@ -971,7 +973,9 @@ class App:
         self._msg("tool", f'Check before you choose: the user asked for the {m.group(1).lower()}. Have you seen the '
                           "deciding value (price, rating, size...) of EVERY option, not just the first? Write each one as a "
                           "note, e.g. <note>Option A: £12.50</note>. If any option's value isn't on a page you've seen yet "
-                          "(e.g. prices only on product pages), open it first. Only then pick the right one and carry on.")
+                          "(e.g. prices only on product pages), open it first. Only then pick the right one and carry on. "
+                          f'The browser is on "{(getattr(getattr(self, "browser", None), "title", "") or "")[:60]}": an Add/Buy button here adds THIS item. '
+                          "For a different item, open its page first (<click text=\"its name\"/> or <back/>), then press Add there.")
         return True
 
     NAV_ASK = re.compile(r"\b(open|click|go to|go into|navigate|visit|switch to|press)\b", re.I)
