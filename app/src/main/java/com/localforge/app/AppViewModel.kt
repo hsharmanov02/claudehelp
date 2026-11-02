@@ -103,12 +103,19 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     var stepNumber by mutableStateOf(0)
         private set
     /** Longest one reply may take, and how long a whole request may keep using tools, before the app steps in. */
-    private val replyLimitMs get() = if (thinkHarder) 8 * 60_000L else 4 * 60_000L
-    private val requestLimitMs get() = if (thinkHarder) 20 * 60_000L else 10 * 60_000L
+    private val replyLimitMs get() = if (thinkHarder) 5 * 60_000L else 3 * 60_000L
+    /** Whole request: after this long the app forces the model to answer with what it has, then ends the turn. */
+    private val requestLimitMs get() = if (thinkHarder) 12 * 60_000L else 7 * 60_000L
     /** Thinking budget: after this much hidden thinking the model must stop thinking and act. */
-    private val thinkTokenBudget = 700
-    private val thinkTimeBudgetMs = 3 * 60_000L
+    private val thinkTokenBudget = 600
+    private val thinkTimeBudgetMs = 2 * 60_000L
     private var timeNudged = false
+    /** Never more than this many model replies for one request, however the tool steps juggle stepsLeft. */
+    private val maxRepliesPerRequest = 14
+    private var repliesThisRequest = 0
+    /** Fingerprints of recent replies and tool calls, to catch loops that aren't byte-for-byte identical. */
+    private val recentReplies = ArrayDeque<String>()
+    @Volatile private var deadlineHit = false
     /** "Ask AI about this page": the chat as a sheet over the live page in the Browser tab. */
     var pagePanelOpen by mutableStateOf(false)
 
@@ -695,7 +702,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     private fun resetRequestState() {
         repeats = 0; lastReply = null; ranCode = false; moved = false; moveNudged = false
+        repliesThisRequest = 0; deadlineHit = false
         seenUrls.clear(); doneLookups.clear(); blockedSites.clear(); failedCode.clear()
+        recentReplies.clear()
     }
 
     private val webWords = Regex(
@@ -713,6 +722,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         "ran successfully|run successfully|executed successfully|(saved|written|created) (it |the file |the csv |successfully)|tests? (all )?pass",
         RegexOption.IGNORE_CASE
     )
+
+    /** A short, normalised fingerprint of a reply, so near-identical replies (and A/B/A/B loops) match. */
+    private fun fingerprint(text: String): String =
+        FileTools.stripThinking(text).lowercase().replace(Regex("[^a-z0-9<>/= ]"), "").replace(Regex("\s+"), " ").trim().take(160)
 
     /** The reply with tool tags removed: what the user actually reads. */
     private fun proseOf(reply: String): String = FileTools.stripThinking(reply).replace(tagAny, "").trim()
@@ -856,15 +869,28 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         genJob = viewModelScope.launch {
             generating = true
             stopRequested = false
+            val requestDeadline = (if (requestStartedAt > 0) requestStartedAt else System.currentTimeMillis()) + requestLimitMs
+            val requestWatchdog = launch {
+                delay((requestDeadline - System.currentTimeMillis()).coerceAtLeast(1000))
+                deadlineHit = true
+                Engine.stop()
+            }
             try {
                 while (stepsLeft > 0) {
                     stepsLeft--
-                    // Loop stopper: past the time budget, no more tools. One last turn to answer with what it has.
-                    if (!timeNudged && requestStartedAt > 0 && System.currentTimeMillis() - requestStartedAt > requestLimitMs && totalSteps > 0) {
+                    // Loop stopper 1: a hard cap on model replies, plus the whole-request deadline.
+                    val overCap = repliesThisRequest >= maxRepliesPerRequest || deadlineHit ||
+                        (requestStartedAt > 0 && System.currentTimeMillis() - requestStartedAt > requestLimitMs)
+                    if (overCap && timeNudged) {
+                        messages += UiMessage(Role.NOTE, "Stopped: this was taking too long and going in circles. " +
+                            "The model is likely too small or too slow for this task on this phone. Try a simpler request or a bigger model.")
+                        break
+                    }
+                    if (overCap && totalSteps > 0) {
                         timeNudged = true
-                        messages += UiMessage(Role.TOOL, "Time is up. STOP using tools now. Answer the user in a few sentences " +
-                            "with what you found so far, and say what you couldn't finish.")
-                        stepsLeft = 0
+                        messages += UiMessage(Role.TOOL, "Stop now. Don't use any more tools or steps. Give the user your best answer " +
+                            "from what you already have, in a few sentences, and say what you couldn't finish.")
+                        stepsLeft = 1
                     }
                     stepNumber = totalSteps + 1
                     val reply = UiMessage(Role.ASSISTANT, "")
@@ -892,15 +918,24 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                                 Engine.stop()
                             }
                         }
-                        if (thinkCut && !cutShort && !stopRequested) {
+                        if (thinkCut && !cutShort && !deadlineHit && !stopRequested) {
                             val prefill = first.trimEnd() + "\n\nI've thought enough. Now I act: the next step, as a tool tag, or my answer.\n</think>\n\n"
                             main.post { reply.text = prefill }
+                            val sb2 = StringBuilder(prefill)
                             prefill + Engine.chat(hist, maxTokens, temperature, prefill = prefill) { piece ->
+                                sb2.append(piece)
                                 main.post { reply.text += piece }
+                                if (sb2.contains("<think>") && !sb2.contains("</think>")) Engine.stop()  // no second think block
                             }
                         } else first
                     } finally {
                         watchdog.cancel()
+                    }
+                    if (deadlineHit) {
+                        reply.text = FileTools.stripThinking(full).ifEmpty { "(stopped — taking too long)" }
+                        messages += UiMessage(Role.NOTE, "Stopped: this request hit its time limit. Here's the reply so far. " +
+                            "For hard tasks a bigger or faster model (Models tab) does far better than a small one on a phone.")
+                        break
                     }
                     if (cutShort) {
                         reply.text = FileTools.stripThinking(full).ifEmpty { "(no answer yet)" }
@@ -925,14 +960,22 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                         break
                     }
                     totalSteps++
-                    val flat = reply.text.replace(Regex("\\s+"), " ").trim()
-                    if (flat == lastReply) {
+                    repliesThisRequest++
+                    // Loop stopper 2: this reply repeats (or closely matches) a recent one, incl. A/B/A/B cycles.
+                    val fp = fingerprint(reply.text)
+                    if (fp.length > 8 && recentReplies.contains(fp)) {
                         repeats++
-                        messages += UiMessage(Role.TOOL, "You sent exactly the same reply as before. Don't repeat it. Answer the user now with what you have.")
-                        if (repeats >= 3) break
+                        if (repeats >= 2) {
+                            messages += UiMessage(Role.NOTE, "Stopped: the model kept repeating itself. Here's its last reply. " +
+                                "A bigger or faster model (Models tab) will get through this; a small one on a phone often gets stuck.")
+                            break
+                        }
+                        messages += UiMessage(Role.TOOL, "You are repeating an earlier reply and going in circles. Do NOT repeat it. " +
+                            "Either take a different next step, or give the user your final answer now with what you have.")
                         continue
                     }
-                    lastReply = flat
+                    recentReplies.addLast(fp)
+                    while (recentReplies.size > 5) recentReplies.removeFirst()
 
                     var actions = FileTools.parse(full)
                     if (actions.none { it is FileAction.Run } && !ranCode && repeats == 0) {
@@ -1102,6 +1145,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             } catch (e: Exception) {
                 messages += UiMessage(Role.NOTE, e.message ?: "Something went wrong")
             } finally {
+                requestWatchdog.cancel()
                 WebBrowser.step = null
                 generating = false
                 saveChat()
