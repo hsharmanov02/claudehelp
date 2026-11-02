@@ -143,6 +143,24 @@ Java_com_localforge_app_engine_LlamaEngine_nativeStop(JNIEnv *, jclass, jlong ha
     if (e) e->stop = true;
 }
 
+// Number of tokens `text` takes (used to fit the conversation into the context window).
+JNIEXPORT jint JNICALL
+Java_com_localforge_app_engine_LlamaEngine_nativeCountTokens(JNIEnv * env, jclass, jlong handle, jbyteArray jtext) {
+    auto * e = (Engine *) handle;
+    if (!e) return -1;
+    std::string text = jbytes(env, jtext);
+    if (text.empty()) return 0;
+    int n = llama_tokenize(e->vocab, text.c_str(), (int32_t) text.size(), nullptr, 0, false, true);
+    return (jint) (n < 0 ? -n : n);
+}
+
+// The context size the model was actually loaded with.
+JNIEXPORT jint JNICALL
+Java_com_localforge_app_engine_LlamaEngine_nativeCtxSize(JNIEnv *, jclass, jlong handle) {
+    auto * e = (Engine *) handle;
+    return e ? (jint) llama_n_ctx(e->ctx) : 0;
+}
+
 // Formats a conversation with the model's own chat template (falls back to ChatML).
 JNIEXPORT jbyteArray JNICALL
 Java_com_localforge_app_engine_LlamaEngine_nativeFormatChat(JNIEnv * env, jclass, jlong handle,

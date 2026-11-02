@@ -28,6 +28,8 @@ object LlamaEngine {
     @JvmStatic external fun nativeLoad(path: String, nCtx: Int, nThreads: Int): Long
     @JvmStatic external fun nativeFree(handle: Long)
     @JvmStatic external fun nativeStop(handle: Long)
+    @JvmStatic external fun nativeCountTokens(handle: Long, text: ByteArray): Int
+    @JvmStatic external fun nativeCtxSize(handle: Long): Int
     @JvmStatic external fun nativeFormatChat(handle: Long, roles: Array<String>, contents: Array<ByteArray>): ByteArray?
     @JvmStatic external fun nativeGenerate(
         handle: Long, prompt: ByteArray, maxTokens: Int, temperature: Float, callback: TokenCallback
@@ -64,6 +66,25 @@ object Engine {
 
     val isLoaded: Boolean get() = handle != 0L
 
+    /** Guards the handle against being freed while the UI thread counts tokens. */
+    private val lock = Any()
+    private val tokenCache = object : LinkedHashMap<String, Int>(256, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Int>?) = size > 400
+    }
+
+    /** Context size of the loaded model (0 if none). */
+    fun contextSize(): Int = synchronized(lock) { if (handle != 0L) LlamaEngine.nativeCtxSize(handle) else 0 }
+
+    /** Exact token count of [text] for the loaded model, or an estimate if none is loaded. */
+    fun countTokens(text: String): Int = synchronized(lock) {
+        if (text.isEmpty()) return 0
+        tokenCache[text]?.let { return it }
+        val n = if (handle != 0L) LlamaEngine.nativeCountTokens(handle, utf8(text)) else -1
+        val out = if (n >= 0) n else (text.length / 3.2).toInt() + 1
+        if (n >= 0) tokenCache[text] = out
+        out
+    }
+
     /** Speed of the last reply in tokens per second (approximate). */
     @Volatile var lastTokensPerSecond: Double = 0.0
         private set
@@ -73,12 +94,15 @@ object Engine {
             throw IllegalStateException("No CPU backend could be loaded on this phone.")
         }
         if (handle != 0L) {
-            LlamaEngine.nativeFree(handle)
-            handle = 0L
-            loadedPath = null
+            synchronized(lock) {
+                LlamaEngine.nativeFree(handle)
+                handle = 0L
+                loadedPath = null
+                tokenCache.clear()
+            }
         }
         val h = LlamaEngine.nativeLoad(path, nCtx, threads)
-        if (h != 0L) {
+        if (h != 0L) synchronized(lock) {
             handle = h
             loadedPath = path
         }
@@ -88,9 +112,12 @@ object Engine {
     suspend fun unload() {
         stop()
         withContext(dispatcher) {
-            if (handle != 0L) LlamaEngine.nativeFree(handle)
-            handle = 0L
-            loadedPath = null
+            synchronized(lock) {
+                if (handle != 0L) LlamaEngine.nativeFree(handle)
+                handle = 0L
+                loadedPath = null
+                tokenCache.clear()
+            }
         }
     }
 

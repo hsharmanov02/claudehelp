@@ -537,48 +537,112 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     /** Model turns left for the current request (each run/read result triggers another turn). */
     private var stepsLeft = 0
 
+    /**
+     * The conversation as the model sees it, fitted to the context window by real token counts.
+     * The current request (the latest user message and everything after it) always comes first. Older turns
+     * are then added newest-first: in full detail while there's room, shortened when room runs low, and
+     * whatever still doesn't fit is replaced by a short list of what the user asked earlier, so the model
+     * never forgets the conversation outright.
+     */
     private fun history(): List<ChatMessage> {
         val overview = if (hasFileAccess) FileIndex.overview().ifBlank { "(not indexed yet)" } else "(no access yet — the user must allow all-files access on the Home tab)"
         val sys = FileTools.systemPrompt(workspaceRoot, runDir().absolutePath, availableLanguages(), overview)
-        // Room for the reply, then the system prompt; the rest (in characters, ~3 per token) is for the chat.
-        val replyRoom = minOf(maxTokens, maxOf(384, nCtx / 3))
-        val budget = maxOf(600, ((nCtx - replyRoom - 200) * 3) - sys.length)
-        val picked = ArrayDeque<ChatMessage>()
-        var used = 0
-        var newestResult = true
-        for (m in messages.asReversed()) {
-            var msg = when (m.role) {
-                Role.USER -> ChatMessage("user", m.modelText ?: m.text)
-                Role.ASSISTANT -> if (m.text.isBlank()) null else ChatMessage("assistant", m.text)
-                Role.TOOL, Role.RUN -> {
-                    var body = if (m.role == Role.TOOL) m.text else (m.modelText ?: m.text)
-                    if (!newestResult && body.length > 1200) body = body.take(1200) + "\n…[older result cut]"
-                    newestResult = false
-                    ChatMessage("user", (if (m.role == Role.TOOL) "[Tool results]\n" else "[Code output]\n") + body)
-                }
-                Role.NOTE -> null
-            } ?: continue
-            if (used + msg.content.length > budget) {
-                if (picked.isNotEmpty()) break
-                // Keep the start and the end (a page's clickable elements are listed last).
-                val head = (budget * 0.6).toInt()
-                msg = ChatMessage(msg.role, msg.content.take(head) + "\n…[cut to fit the model's memory]…\n" + msg.content.takeLast(budget - head))
+        val ctx = Engine.contextSize().takeIf { it > 0 } ?: nCtx
+        val replyRoom = minOf(maxTokens, maxOf(384, ctx / 3))
+        // Each message costs a few template tokens on top of its text.
+        fun cost(c: ChatMessage) = Engine.countTokens(c.content) + 8
+        var left = maxOf(300, ctx - replyRoom - Engine.countTokens(sys) - 48)
+
+        // Keeps the start and the end of [text] (a page's clickable elements are listed last) within [tokens].
+        fun cutToTokens(text: String, tokens: Int): String {
+            if (tokens <= 0) return ""
+            var chars = text.length
+            for (attempt in 0 until 4) {
+                val n = Engine.countTokens(text.take(chars))
+                if (n <= tokens) break
+                chars = (chars * tokens.toDouble() / n * 0.92).toInt()
             }
-            used += msg.content.length
-            picked.addFirst(msg)
+            if (chars >= text.length) return text
+            val head = (chars * 0.6).toInt()
+            return text.take(head) + "\n…[cut to fit the model's memory]…\n" + text.takeLast(maxOf(0, chars - head - 40))
         }
+
+        fun clip(text: String, max: Int, note: String): String =
+            if (text.length <= max) text else text.take((max * 0.7).toInt()) + "\n…[$note]…\n" + text.takeLast((max * 0.3).toInt())
+
+        fun toChat(m: UiMessage, current: Boolean, detail: Int): ChatMessage? = when (m.role) {
+            Role.USER -> {
+                val t = m.modelText ?: m.text
+                ChatMessage("user", if (current) t else clip(t, if (detail == 0) 2400 else 500, "earlier message shortened"))
+            }
+            Role.ASSISTANT -> if (m.text.isBlank()) null
+                else ChatMessage("assistant", if (current) m.text else clip(m.text, if (detail == 0) 3000 else 700, "earlier reply shortened"))
+            Role.TOOL, Role.RUN -> {
+                val body = if (m.role == Role.TOOL) m.text else (m.modelText ?: m.text)
+                val max = if (current) (if (detail == 0) Int.MAX_VALUE else 1200) else (if (detail == 0) 1200 else 300)
+                ChatMessage("user", (if (m.role == Role.TOOL) "[Tool results]\n" else "[Code output]\n") + clip(body, max, "older result cut"))
+            }
+            Role.NOTE -> null
+        }
+
+        val all = messages.toList()
+        val lastUser = all.indexOfLast { it.role == Role.USER }.coerceAtLeast(0)
+        val picked = sortedMapOf<Int, ChatMessage>()
+
+        // 1) The user's current question: always kept.
+        all.getOrNull(lastUser)?.let { m -> toChat(m, true, 0)?.let { c ->
+            val fit = if (cost(c) <= left) c else ChatMessage(c.role, cutToTokens(c.content, maxOf(200, left / 2)))
+            left -= cost(fit); picked[lastUser] = fit
+        } }
+        // 2) The work done for it so far, newest first (the newest result in full, earlier ones shortened).
+        var newest = true
+        for (i in all.indices.reversed()) {
+            if (i <= lastUser) break
+            val c = toChat(all[i], true, if (newest && all[i].role != Role.ASSISTANT) 0 else 1) ?: continue
+            if (all[i].role != Role.ASSISTANT) newest = false
+            val fit = when {
+                cost(c) <= left -> c
+                left > 250 -> ChatMessage(c.role, cutToTokens(c.content, left - 20))
+                else -> null
+            } ?: break
+            left -= cost(fit); picked[i] = fit
+        }
+        // 3) Earlier conversation, newest first: full detail while there's room, then shortened.
+        var droppedFrom = -1
+        for (i in (lastUser - 1) downTo 0) {
+            val full = toChat(all[i], false, 0) ?: continue
+            val c = if (cost(full) <= left) full else toChat(all[i], false, 1)!!
+            if (cost(c) > left) { droppedFrom = i; break }
+            left -= cost(c); picked[i] = c
+        }
+        // 4) Whatever didn't fit: a short reminder of what the user asked, so the thread isn't lost.
+        var recap = ""
+        if (droppedFrom >= 0) {
+            val asked = all.subList(0, droppedFrom + 1).filter { it.role == Role.USER }.map { it.text.replace(Regex("\\s+"), " ").take(160) }
+            val lines = mutableListOf<String>()
+            for (q in asked.asReversed()) {
+                val line = "- $q"
+                if (Engine.countTokens(line) + 12 > left) break
+                left -= Engine.countTokens(line) + 1
+                lines.add(0, line)
+            }
+            if (lines.isNotEmpty()) recap = "[Earlier in this conversation (older messages no longer shown in full) I asked:\n" +
+                lines.joinToString("\n") + "]\n\n"
+        }
+
         // Many chat templates need alternating turns: merge neighbours with the same role.
         val merged = mutableListOf<ChatMessage>()
-        for (m in picked) {
+        for (m in picked.values) {
             val last = merged.lastOrNull()
             if (last != null && last.role == m.role) merged[merged.size - 1] = ChatMessage(m.role, last.content + "\n\n" + m.content)
             else merged += m
         }
         while (merged.isNotEmpty() && merged.first().role != "user") merged.removeAt(0)
-        if (merged.isEmpty()) merged += ChatMessage("user", lastUserText().take(budget).ifBlank { "Hello" })
-        else if (merged.last().role == "user" && picked.lastOrNull()?.content?.let { it.startsWith("[Tool results]") || it.startsWith("[Code output]") } == true) {
+        if (merged.isEmpty()) merged += ChatMessage("user", cutToTokens(lastUserText(), maxOf(200, left)).ifBlank { "Hello" })
+        if (recap.isNotEmpty()) merged[0] = ChatMessage("user", recap + merged[0].content)
+        if (merged.last().role == "user" && picked.values.lastOrNull()?.content?.let { it.startsWith("[Tool results]") || it.startsWith("[Code output]") } == true) {
             // After tool output small models forget what was asked: repeat the question.
-            val q = messages.lastOrNull { it.role == Role.USER }?.text?.take(500)
+            val q = all.getOrNull(lastUser)?.takeIf { it.role == Role.USER }?.text?.take(500)
             if (!q.isNullOrBlank()) merged[merged.size - 1] = ChatMessage("user", merged.last().content +
                 "\n\n[The user's question: $q]\nIf the results above answer it, answer it now, fully and directly.")
         }

@@ -15,8 +15,8 @@ android {
         applicationId = "com.localforge.app"
         minSdk = 30
         targetSdk = 36
-        versionCode = 7
-        versionName = "1.6"
+        versionCode = 8
+        versionName = "1.8"
 
         ndk {
             abiFilters += listOf("arm64-v8a")
