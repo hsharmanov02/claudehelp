@@ -131,19 +131,19 @@ Browser rules:
                 val link = b.extractLink(n, a.extra == "row")
                 if (link != null) {      // the model meant row N of the last <extract>, not page element N
                     b.navigate(link)
-                    val r = "Opened row $n of the extracted data ($link). Now:\n" + b.describe(2500)
+                    val r = "Opened row $n of the extracted data ($link). Now:\n" + b.describe(1800)
                     r + blockedHint(r)
                 } else {
                     b.click(n)
-                    val r = "Clicked. Now:\n" + b.describe(2500)
+                    val r = "Clicked. Now:\n" + b.describe(1800)
                     r + blockedHint(r)
                 }
             }
             "type" -> {
                 b.fill(a.path.toInt(), a.content, a.extra == "submit")
-                (if (a.extra == "submit") "Typed and submitted. Now:\n" else "Typed. Now:\n") + b.describe(2500)
+                (if (a.extra == "submit") "Typed and submitted. Now:\n" else "Typed. Now:\n") + b.describe(1800)
             }
-            "press" -> { b.key(a.path); "Pressed ${a.path}. Now:\n" + b.describe(2500) }
+            "press" -> { b.key(a.path); "Pressed ${a.path}. Now:\n" + b.describe(1800) }
             "js" -> "Script result:\n" + b.runJs(a.content)
             else -> "Unknown browser action"
         }

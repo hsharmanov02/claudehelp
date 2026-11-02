@@ -174,6 +174,10 @@ fun BrowserScreen(vm: AppViewModel) {
                             }
                             IconButton(onClick = { vm.pagePanelOpen = false }) { Icon(Icons.Filled.Close, "Close", tint = C.Muted) }
                         }
+                        if (vm.nCtx < 4096) Text(
+                            "Web pages need more memory than the model has. Set Context size to 4096+ on the Home tab and reload the model.",
+                            color = C.Gold, fontSize = 12.sp, modifier = Modifier.padding(horizontal = 16.dp)
+                        )
                         PanelChat(vm, Modifier.weight(1f))
                         InputBar(vm, placeholder = "What should I do on this page?") { vm.send(onPage = true) }
                     }

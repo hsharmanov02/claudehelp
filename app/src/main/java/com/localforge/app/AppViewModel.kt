@@ -514,7 +514,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             } ?: continue
             if (used + msg.content.length > budget) {
                 if (picked.isNotEmpty()) break
-                msg = ChatMessage(msg.role, msg.content.take(budget) + "\n…[cut to fit the model's memory]")
+                // Keep the start and the end (a page's clickable elements are listed last).
+                val head = (budget * 0.6).toInt()
+                msg = ChatMessage(msg.role, msg.content.take(head) + "\n…[cut to fit the model's memory]…\n" + msg.content.takeLast(budget - head))
             }
             used += msg.content.length
             picked.addFirst(msg)
@@ -984,7 +986,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                             outs += "${st.label}: done"
                         }
                         p.result = "Did ${outs.size} of ${a.steps.size} steps"
-                        val page = try { WebBrowser.describe(2500) } catch (e: Exception) { "(couldn't read the page: ${e.message})" }
+                        val page = try { WebBrowser.describe(1800) } catch (e: Exception) { "(couldn't read the page: ${e.message})" }
                         messages += UiMessage(Role.TOOL, outs.joinToString("\n") + "\n\nThe page now (check it shows what you expected):\n" + page)
                     } else if (a is FileAction.Browser) {
                         var r = browserStep(a)

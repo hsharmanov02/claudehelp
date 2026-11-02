@@ -366,13 +366,13 @@ object WebBrowser {
 
     // ---------- reading pages ----------
 
-    suspend fun describe(maxText: Int = 3000, withConsole: Boolean = true): String {
+    suspend fun describe(maxText: Int = 2200, withConsole: Boolean = true): String {
         val d = JSONObject(evalString(script("snapshot")))
         url = d.optString("url"); title = d.optString("title")
         var text = d.optString("text")
         if (text.length > maxText) text = text.take(maxText) + "\n…[page text cut — scroll or use <extract/> for more]"
         val els = d.optJSONArray("elements") ?: JSONArray()
-        val list = (0 until minOf(els.length(), 45)).joinToString("\n") { els.getString(it).take(100) }
+        val list = (0 until minOf(els.length(), 40)).joinToString("\n") { els.getString(it).take(90) }
         val cuesArr = d.optJSONArray("cues") ?: JSONArray()
         val cues = (0 until cuesArr.length()).joinToString("\n") { cuesArr.getString(it) }.take(1000)
         val problems = if (withConsole) consoleText(onlyProblems = true, limit = 10) else ""
