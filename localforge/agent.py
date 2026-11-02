@@ -475,6 +475,8 @@ class App:
         visited = getattr(self, "visited", [])
         if visited:
             lines.append("Pages visited, oldest first: " + " -> ".join(f"{t[:40]} ({u[:80]})" for t, u in visited[-6:]))
+        if visited:
+            lines.append(f"The browser is on: {visited[-1][0][:60]} ({visited[-1][1][:100]}). Clicks act on THIS page only.")
         lines.append(f"Step {getattr(self, 'total_steps', 0) + 1}, {self.steps_left} left. If every part of the task is "
                      "done, give the final answer now from your notes and the pages. Otherwise do the next step.")
         return "\n".join(lines)
@@ -635,7 +637,7 @@ class App:
                     reply["actions"][-1]["queued"] = [x.to_dict() for x in rest]
                     break
                 key = (a.kind, a.path, a.content)
-                if a.kind in ("extract", "page", "scroll"):
+                if a.kind in ("extract", "page", "scroll", "sitesearch"):
                     key += (getattr(self.browser, "url", ""),)
                 site = self._site_for(a)
                 if site and site in self.blocked_sites:
@@ -674,12 +676,14 @@ class App:
                     self._set_status(a.label + "…")
                     r = self._exec_browser(a)
                     self._note_block(a, r)
+                    if a.kind in ("back", "sitesearch"):
+                        self._page_changed()
                     if a.kind == "browse" and DATA_WORDS.search(self._last_user_text()) and "[LocalForge note]" not in r:
                         r += "\n\n" + self._auto_extract()
                     if a.kind in ("search", "browse"):
                         self.seen_urls = getattr(self, "seen_urls", set()) | set(re.findall(r"https?://[^\s)\]\"'<>]+", r))
                     results.append(r)
-                    if a.kind != "scroll":
+                    if a.kind not in ("scroll", "back", "wait"):     # going back again is a real step, not a repeat
                         self.done_lookups[key] = True
                     continue
                 if a.is_browser and not browser_auto and reply["actions"] and \
