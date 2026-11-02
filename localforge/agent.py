@@ -42,6 +42,11 @@ REFERS_BACK = re.compile(
     r"\b(previous|last|earlier|before|prior|first)\b.{0,30}\b(prompt|question|message|request|ask|asked|said|typed|wrote)|"
     r"what (did|was) i (just )?(ask|say|said|tell|type|write|want)|"
     r"\b(remind me what|you said|i said|i asked|i told you|i just asked)\b", re.I)
+# A job to do on websites (not a quick lookup): gets more steps, a plan, saved notes and a progress block.
+TASK_WORDS = re.compile(r"\b(go to|open|log ?in|sign ?in|fill|form|click|book|order|buy|add to (cart|basket)|checkout|apply|"
+                        r"register|subscribe|post|reply|send|download|navigate|find .{0,40} on|compare|every|each|all the|"
+                        r"step|then|and then|after that)\b", re.I)
+URL_IN = re.compile(r"https?://|www\.|\b[\w-]+\.(com|org|net|io|co|uk|dev|ai|gov|edu)\b", re.I)
 NIX_PATH = re.compile(r"(?<![\w])/(?:home|Users|mnt|tmp|var|opt)/[^\s\"'`]+")
 
 
@@ -71,6 +76,11 @@ class App:
         self.blocked_sites = set()
         self.ran_code = False
         self.failed_code = set()
+        self.browser_task = False
+        self.task_notes = []
+        self.visited = []
+        self.rethink = False
+        self.stop_requested = False
         self.search_state = {"query": "", "results": [], "busy": False, "error": None}
         self.repo_state = {"repo": None, "files": [], "busy": False, "error": None}
         self.recs = {"items": [], "busy": False, "summary": None}
@@ -121,7 +131,7 @@ class App:
     # ---------- settings ----------
     def update_settings(self, values: dict):
         allowed = {"nCtx": int, "threads": int, "gpuLayers": int, "backend": str, "temperature": float,
-                   "maxTokens": int, "think": bool, "autoApprove": bool, "browserAutoApprove": bool, "hfToken": str}
+                   "maxTokens": int, "think": bool, "thinkBrowser": bool, "autoApprove": bool, "browserAutoApprove": bool, "hfToken": str}
         for k, v in values.items():
             if k in allowed:
                 self.settings.set(k, allowed[k](v))
@@ -291,7 +301,12 @@ class App:
                           "for data, use <extract/>. Then click/type on it as needed.]\n"
                           + (model_text or text))
         user = self._msg("user", display, model_text)
-        self.steps_left = 12
+        self.browser_task = bool(on_page and TASK_WORDS.search(text)) or bool(
+            (WEB_WORDS.search(text) or URL_IN.search(text)) and TASK_WORDS.search(text))
+        self.task_notes = []
+        self.visited = []
+        self.rethink = self.browser_task      # plan the task with (capped) thinking on the first step
+        self.steps_left = 30 if self.browser_task else 12
         self.total_steps = 0
         self.last_reply = None
         self.seen_urls = set()
@@ -391,7 +406,7 @@ class App:
     CHARS_PER_TOKEN = 2.6     # web pages and code tokenise worse than prose; stay on the safe side
     OLD_RESULT_CHARS = 1200   # older tool results are cut to this; the newest one stays whole
 
-    def _history(self, shrink: float = 1.0) -> list[dict]:
+    def _history(self, shrink: float = 1.0, extra: str = "") -> list[dict]:
         s = self.settings
         langs = sorted(runner.tools())
         overview = "PC overview: " + self.index.overview()
@@ -441,10 +456,28 @@ class App:
         elif merged[-1]["role"] == "user" and picked and re.match(r"\[(Tool results|Code output)\]", picked[-1]["content"]):
             # After tool output small models forget what was asked. Repeat the question.
             q = (self.messages_question() or "")[:600]
-            if q:
+            if q and getattr(self, "browser_task", False):
+                merged[-1] = {"role": "user", "content": merged[-1]["content"] + "\n\n" + self._progress(q)}
+            elif q:
                 merged[-1] = {"role": "user", "content": merged[-1]["content"] +
                               f"\n\n[The user's question: {q}]\nIf the results above answer it, answer it now, fully and directly."}
+        if extra and merged and merged[-1]["role"] == "user":
+            merged[-1] = {"role": "user", "content": merged[-1]["content"] + extra}
         return [{"role": "system", "content": sys_prompt}] + merged
+
+    def _progress(self, q: str) -> str:
+        """For website tasks: the goal, what's been found and where the browser has been, after every result.
+        Old pages get cut to fit the model's memory; this keeps a long task on track."""
+        lines = [f"[Task progress - the user's task: {q}]"]
+        notes = getattr(self, "task_notes", [])
+        if notes:
+            lines.append("Your notes so far: " + " | ".join(notes[-15:]))
+        visited = getattr(self, "visited", [])
+        if visited:
+            lines.append("Pages visited, oldest first: " + " -> ".join(f"{t[:40]} ({u[:80]})" for t, u in visited[-6:]))
+        lines.append(f"Step {getattr(self, 'total_steps', 0) + 1}, {self.steps_left} left. If every part of the task is "
+                     "done, give the final answer now from your notes and the pages. Otherwise do the next step.")
+        return "\n".join(lines)
 
     RECAP_MESSAGES = 8
 
@@ -472,14 +505,34 @@ class App:
                 f'{first + i}. "{short(m)}"' for i, m in enumerate(earlier))
         return note + "]"
 
+    PLAN_THINK = 1200      # thinking tokens to plan a website task (about 30 s at 40 tok/s)
+    FIX_THINK = 600        # ...and to work out another way after a step failed
+
     def _chat(self, on_piece, reply):
         """Asks the model, shrinking the history and retrying if it doesn't fit in the context."""
         s = self.settings
         think = bool(s.get("think"))
-        reply_room = min(max(s.get("maxTokens"), 8192 if think else 0), max(512, s.get("nCtx") // (2 if think else 3)))
+        cap = 0
+        if not think and getattr(self, "rethink", False) and s.get("thinkBrowser"):
+            # Website tasks: think briefly to plan, and again when a step fails. Not on every step: too slow.
+            think, cap = True, (self.PLAN_THINK if getattr(self, "total_steps", 0) == 0 else self.FIX_THINK)
+        self.rethink = False
+        reply_room = min(max(s.get("maxTokens"), 8192 if think and not cap else 0) + cap,
+                         max(512, s.get("nCtx") // (2 if think else 3)))
+        extra = ""
         for shrink in (1.0, 0.6, 0.35, 0.15):
             try:
-                return self.engine.chat(self._history(shrink), reply_room, s.get("temperature"), on_piece, think)
+                full = self.engine.chat(self._history(shrink, extra), reply_room, s.get("temperature"), on_piece, think, cap)
+                if getattr(self.engine, "last_finish", "") != "think_cap" or self.stop_requested:
+                    return full
+                # Thought for long enough: give it its own thoughts and ask it to act on them, without thinking.
+                thought = re.sub(r"\s+", " ", self.engine.last_reasoning).strip()[-1800:]
+                extra = (f"\n\n[Your thinking so far (cut short to save time): …{thought}]\n"
+                         "Now act on it: write your short plan if you haven't, then the next step's tag.")
+                reply["text"] = ""
+                think, cap = False, 0
+                reply_room = min(s.get("maxTokens"), max(512, s.get("nCtx") // 3))
+                return self.engine.chat(self._history(shrink, extra), reply_room, s.get("temperature"), on_piece, False)
             except RuntimeError as e:
                 if "context" not in str(e).lower() or shrink == 0.15:
                     raise
@@ -535,6 +588,13 @@ class App:
                                   "with <js> and document.querySelectorAll.")
                 continue
             actions = tools.parse(full)
+            for n in tools.notes(full):
+                if n not in self.task_notes:
+                    self.task_notes.append(n)
+            if not actions and getattr(self, "browser_task", False) and tools.NOTE.search(full) and \
+                    len(tools.prose_of(full)) < 40 and self.steps_left > 0:
+                self._msg("tool", "Noted. Carry on with the next step of the task.")
+                continue
             if not any(a.kind == "run" for a in actions) and not self.ran_code and not self.repeats:
                 # Only before any code ran: later, code blocks in a final answer are examples, not requests.
                 fb = tools.fallback_run(self._last_user_text(), full)
@@ -542,7 +602,7 @@ class App:
                     actions.append(fb)
             # Small models often finish a full answer and then ask for a needless click. Drop it.
             dropped = False
-            if len(tools.prose_of(full)) > 350 and actions and all(a.kind in ("click", "type", "press", "scroll", "page")
+            if len(tools.prose_of(full)) > (900 if getattr(self, "browser_task", False) else 350) and actions and all(a.kind in ("click", "type", "press", "scroll", "page")
                                                                   for a in actions):
                 actions, dropped = [], True
             if not actions and not dropped and re.search(r"<(search|browse|fetch|extract|click|type|press|scroll|page|js|run|write|read|list|find)\b",
@@ -602,7 +662,7 @@ class App:
                                    "Look at the page above and pick element numbers from it.")
                     continue
                 if a.is_browser and a.browser_read:
-                    if a.kind in ("browse", "search"):
+                    if a.kind in ("browse", "search", "sitesearch", "back"):
                         navigated = True
                     if a.kind == "browse" and os.path.normcase(a.path) in getattr(self, "fresh_pages", set()):
                         self.fresh_pages.discard(os.path.normcase(a.path))
@@ -652,7 +712,14 @@ class App:
                     self._files_changed(a)
                 else:
                     waiting = True
-            if self.repeats >= 2 and self.steps_left > 1 and not waiting:
+            for r in results:
+                m = re.search(r"Browser page: (.*)\nURL: (\S+)", r)
+                if m and (not self.visited or self.visited[-1][1] != m.group(2)):
+                    self.visited.append((m.group(1).strip(), m.group(2)))
+                if getattr(self, "browser_task", False) and re.search(
+                        r"^(⚠ Nothing on the page changed|Browser error|Skipped)|This site blocked|isn't on the page any more", r, re.M):
+                    self.rethink = True      # a step failed: think once about another way
+            if self.repeats >= (3 if getattr(self, "browser_task", False) else 2) and self.steps_left > 1 and not waiting:
                 results.append("STOP using tools now. Write your final answer to the user from the results above. "
                                "If you couldn't get the information, say so and share what you did find.")
                 self.steps_left = 1
@@ -784,7 +851,7 @@ class App:
                 # Carry on once every card in that reply has been answered.
                 waiting = msg and any(x["status"] == "pending" for x in msg["actions"])
                 if self.engine.loaded and not waiting:
-                    if self.steps_left <= 0 and getattr(self, "total_steps", 0) < 24:
+                    if self.steps_left <= 0 and getattr(self, "total_steps", 0) < (60 if getattr(self, "browser_task", False) else 24):
                         self.steps_left = 3
                     self._agent_loop()
             except Exception as e:
@@ -848,7 +915,7 @@ class App:
                         r"(saved|written|created) (it |the file |the csv |successfully)|tests? (all )?pass", re.I)
 
     def _exec_browser(self, a):
-        if a.kind in ("browse", "click", "type", "press"):
+        if a.kind in ("browse", "click", "type", "press", "fill", "sitesearch", "back"):
             self.moved = True
         return tools.execute_browser(a, self.browser)
 
