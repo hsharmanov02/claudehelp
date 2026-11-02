@@ -126,6 +126,7 @@ function renderHome() {
         </div>
         <div style="margin-top:12px" class="stack">
           <label class="toggle"><input type="checkbox" data-set="think" ${s.think ? "checked" : ""}> Think harder: let reasoning models (Qwen 3.x, Gemma 4) think before answering. Smarter on hard problems, but much slower</label>
+          <label class="toggle"><input type="checkbox" data-set="thinkBrowser" ${s.thinkBrowser !== false ? "checked" : ""}> Plan website tasks: for jobs on websites, the AI thinks briefly before starting and again when a step fails (about 15-30 s each). Much better at multi-step browser tasks</label>
           <label class="toggle"><input type="checkbox" data-set="autoApprove" ${s.autoApprove ? "checked" : ""}> Let the AI write files and run code without asking (deletes always ask)</label>
           <div class="field"><label>Hugging Face token (only for gated models) ${s.hfToken ? '<span class="pill ok">saved</span>' : ""}</label>
             <input type="password" placeholder="hf_…" data-set="hfToken"></div>
@@ -238,7 +239,7 @@ function renderModels() {
 function stepLabel(k, attrs) {
   const v = ((attrs.match(/=\s*&quot;([\s\S]*?)&quot;/) || [])[1] || "").slice(0, 80);
   return ({ search: "🔎 Search: " + v, browse: "🌐 Open " + v, goto: "🌐 Open " + v, navigate: "🌐 Open " + v, fetch: "⬇ Fetch " + v,
-    page: "📄 Read the page", extract: "📊 Extract data" + (v ? ": " + v : ""), click: /row\s*=/.test(attrs) ? "🖱 Open row " + v : "🖱 Click [" + v + "]", press: "⌨ Press " + v,
+    page: v ? "🔍 Find on page: " + v : "📄 Read the page", back: "⬅ Back", wait: "⏳ Wait" + (v ? " for " + v : ""), extract: "📊 Extract data" + (v ? ": " + v : ""), click: /row\s*=/.test(attrs) ? "🖱 Open row " + v : "🖱 Click [" + v + "]", press: "⌨ Press " + v,
     scroll: "↕ Scroll " + (v || "down"), find: "🔍 Find files: " + v, list: "📁 List " + v, read: "📄 Read " + v,
     mkdir: "📁 New folder " + v, delete: "🗑 Delete " + v, open: "↗ Open " + v })[k] || k;
 }
@@ -257,7 +258,8 @@ function md(src) {
     }
     let h = esc(part)
       .replace(/&lt;(write|run|type|js)[\s\S]*?(&lt;\/\1&gt;|$)/g, "")       // tool tags are shown as cards instead
-      .replace(/&lt;(find|list|read|mkdir|delete|open|search|browse|goto|navigate|fetch|page|extract|click|press|scroll)(\s(?:[^&]|&quot;|&amp;|&#39;|&#x27;)*?)?\/?&gt;/g, (m, k, attrs) => `<span class="pill step">${stepLabel(k, attrs || "")}</span>`)
+      .replace(/&lt;note&gt;([\s\S]*?)&lt;\/note&gt;/g, (m, t) => `<span class="pill step">📝 ${t.slice(0, 160)}</span>`)
+      .replace(/&lt;(find|list|read|mkdir|delete|open|search|browse|goto|navigate|fetch|page|extract|click|press|scroll|back|wait)(\s(?:[^&]|&quot;|&amp;|&#39;|&#x27;)*?)?\/?&gt;/g, (m, k, attrs) => `<span class="pill step">${stepLabel(k, attrs || "")}</span>`)
       .replace(/`([^`\n]+)`/g, "<code>$1</code>")
       .replace(/\*\*([^*\n]+)\*\*/g, "<b>$1</b>")
       .replace(/(^|[^*])\*([^*\n]+)\*/g, "$1<i>$2</i>")

@@ -200,13 +200,16 @@ class Engine:
                 return line.split("load_tensors:")[-1].strip()
         return ""
 
-    def chat(self, messages: list[dict], max_tokens: int, temperature: float, on_piece, think: bool = False) -> str:
+    def chat(self, messages: list[dict], max_tokens: int, temperature: float, on_piece, think: bool = False,
+             think_cap: int = 0) -> str:
         """Streams a reply. on_piece(text) gets each new chunk. Returns the whole reply."""
         if not self.loaded:
             raise RuntimeError("No model is loaded")
         self._stop.clear()
         self.last_tps = 0.0
         self.last_finish = ""
+        self.last_reasoning = ""
+        reasoning = []
         # Page text cut mid-emoji leaves half a character, which makes the engine reject the whole request.
         messages = [{**m, "content": m["content"].encode("utf-8", "replace").decode("utf-8")}
                     if isinstance(m.get("content"), str) else m for m in messages]
@@ -250,11 +253,17 @@ class Engine:
                             thinking = True
                             on_piece("⁣")  # invisible marker: UI shows "thinking…"
                         n += 1
+                        reasoning.append(delta["reasoning_content"])
+                        if think_cap and len(reasoning) >= think_cap and not out:
+                            self.last_finish = "think_cap"     # thought long enough: the caller asks it to act
+                            break
                     piece = delta.get("content")
                     if piece:
                         n += 1
                         out.append(piece)
                         on_piece(piece)
+                if self.last_finish == "think_cap":
+                    break
         except urllib.error.HTTPError as e:
             msg = e.read().decode("utf-8", "replace")[:400]
             raise RuntimeError(f"Engine error {e.code}: {msg}") from None
@@ -270,6 +279,7 @@ class Engine:
                     r.close()
                 except Exception:
                     pass
+        self.last_reasoning = "".join(reasoning)
         if not self.last_tps and n:
             self.last_tps = n / max(0.01, time.time() - t0)
         return "".join(out)

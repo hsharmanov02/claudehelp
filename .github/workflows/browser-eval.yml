@@ -1,0 +1,44 @@
+name: Browser task eval (real models)
+on: push
+jobs:
+  eval:
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    strategy:
+      fail-fast: false
+      matrix:
+        model: [q4b, q9b, q35moe]
+        version: [old, new]
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - run: git worktree add old 8144f7e
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: pip install websocket-client psutil requests || true; pip install -r requirements.txt || true
+      - name: llama.cpp
+        env: { GH_TOKEN: "${{ github.token }}" }
+        run: |
+          for t in $(gh release list -R ggml-org/llama.cpp -L 10 --exclude-pre-releases --json tagName -q '.[].tagName'); do
+            gh release download $t -R ggml-org/llama.cpp -p "*bin-ubuntu-x64*" -D dl && break
+          done
+          cd dl && for f in *; do case $f in *.zip) unzip -q $f;; *.tar.gz) tar xzf $f;; esac; done && cd ..
+          echo "LOCALFORGE_LLAMA_SERVER=$(find $PWD/dl -name llama-server -type f | head -1)" >> $GITHUB_ENV
+          echo "LD_LIBRARY_PATH=$(dirname $(find $PWD/dl -name llama-server -type f | head -1))" >> $GITHUB_ENV
+      - name: Model
+        run: |
+          mkdir -p lfhome/models
+          case ${{ matrix.model }} in
+            q4b) url=https://huggingface.co/mradermacher/Qwen3-4B-abliterated-GGUF/resolve/main/Qwen3-4B-abliterated.Q4_K_M.gguf;;
+            q9b) url=https://huggingface.co/mradermacher/Huihui-Qwen3.5-9B-abliterated-GGUF/resolve/main/Huihui-Qwen3.5-9B-abliterated.Q4_K_M.gguf;;
+            q35moe) url=https://huggingface.co/mradermacher/Huihui-Qwen3.6-35B-A3B-abliterated-i1-GGUF/resolve/main/Huihui-Qwen3.6-35B-A3B-abliterated.i1-IQ3_XXS.gguf;;
+          esac
+          curl -sfL -o lfhome/models/model.gguf "$url"
+          ls -la lfhome/models
+      - name: Eval
+        run: |
+          code=$PWD; [ "${{ matrix.version }}" = old ] && code=$PWD/old
+          LOCALFORGE_HOME=$PWD/lfhome python diag/browser_eval.py $code $PWD/lfhome/models/model.gguf "${{ matrix.model }}-${{ matrix.version }}" 2>&1 | tee eval.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with: { name: "eval-${{ matrix.model }}-${{ matrix.version }}", path: eval.log }

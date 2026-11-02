@@ -135,7 +135,7 @@ SNAPSHOT_JS = r"""
   const sel = 'a[href],button,input:not([type=hidden]),textarea,select,[role=button],[role=link],[role=tab],[role=menuitem],[role=checkbox],[role=option],[contenteditable=true],[onclick],summary,label[for]';
   const out = []; let n = 0;
   for (const el of document.querySelectorAll(sel)) {
-    if (!vis(el) || n >= 150) continue;
+    if (!vis(el) || n >= 400) continue;
     n++; el.setAttribute('data-lf-id', n);
     const tag = el.tagName.toLowerCase();
     let label = (el.getAttribute('aria-label') || el.innerText || el.value || el.placeholder || el.title || el.alt || el.name || '').trim().replace(/\s+/g, ' ').slice(0, 80);
@@ -152,7 +152,10 @@ SNAPSHOT_JS = r"""
       if (ctx) extra += ' (in: "' + ctx + '")';
       if (el.type === 'checkbox' || el.type === 'radio') label = label === 'on' ? '' : label;
     }
-    out.push('[' + n + '] ' + kind + ' "' + label + '"' + extra);
+    const b = el.getBoundingClientRect();
+    out.push({ s: '[' + n + '] ' + kind + ' "' + label + '"' + extra,
+               v: b.bottom > 0 && b.top < innerHeight ? 1 : 0,
+               f: /^(input|textarea|select)$/.test(tag) || el.isContentEditable ? 1 : 0 });
   }
   let text = (document.body ? document.body.innerText : '').replace(/\n{3,}/g, '\n\n').trim();
   // Meaning shown only by style: struck-through (done) items and red/down numbers lose it in plain text.
@@ -180,6 +183,11 @@ SNAPSHOT_JS = r"""
   return JSON.stringify({ url: location.href, title: document.title, text, elements: out, cues });
 })()
 """
+
+def _num(s: str) -> int:
+    m = re.match(r"\[(\d+)\]", s)
+    return int(m.group(1)) if m else 0
+
 
 KEYS = {
     "enter": ("Enter", "Enter", 13, "\r"), "tab": ("Tab", "Tab", 9, None), "escape": ("Escape", "Escape", 27, None),
@@ -660,15 +668,47 @@ class Browser:
             data["text"] = data["text"][:max_text] + "\n…[page text cut — scroll or ask for more]"
         return data
 
-    def describe(self, max_text=4500, console=True) -> str:
+    MAX_ELEMENTS = 90
+
+    @classmethod
+    def pick_elements(cls, elements: list, find: str = "") -> tuple[list[str], int]:
+        """Which numbered elements the model sees. Pages often have hundreds; the first 70 in page order used to
+        be all menus and footers, so the button the task needed was never listed. Now: form fields and what's on
+        screen first, then the rest in page order, shown sorted by number. find="words" lists only matches."""
+        els = [e if isinstance(e, dict) else {"s": e, "v": 1, "f": 0} for e in elements]
+        if find:
+            words = [w for w in re.findall(r"\w+", find.lower()) if len(w) > 1]
+            hits = [e for e in els if words and any(w in e["s"].lower() for w in words)]
+            hits.sort(key=lambda e: -sum(w in e["s"].lower() for w in words))
+            hits = hits[:cls.MAX_ELEMENTS]
+            return [e["s"][:140] for e in sorted(hits, key=lambda e: _num(e["s"]))], len(els) - len(hits)
+        ranked = sorted(range(len(els)), key=lambda i: (-(els[i]["f"] or els[i]["v"]), i))[:cls.MAX_ELEMENTS]
+        return [els[i]["s"][:120] for i in sorted(ranked)], len(els) - len(ranked)
+
+    def signature(self) -> str:
+        """A cheap fingerprint of the page, to tell whether a click or key press changed anything."""
+        try:
+            return self.eval("location.href + '|' + document.title + '|' + (document.body ? document.body.innerText.length + '|' + "
+                             "document.querySelectorAll('*').length + '|' + document.body.innerText.slice(0, 3000) : '')", 5) or ""
+        except Exception:
+            return ""
+
+    def describe(self, max_text=4500, console=True, find: str = "") -> str:
         d = self.snapshot(max_text)
         self._last_read = "describe"
-        els = "\n".join(e[:110] for e in d["elements"][:70])
+        picked, hidden = self.pick_elements(d["elements"], find)
+        els = "\n".join(picked)
+        if find:
+            return (f"Browser page: {d['title']}\nURL: {d['url']}\n\n" +
+                    (f'Elements matching "{find}" (use their numbers):\n' + els if picked else
+                     f'No elements match "{find}". Try other words, <scroll/> or <page/>.'))
+        elif hidden:
+            els += f'\n(+{hidden} more elements off-screen. To find one: <page find="words on it"/>)'
         problems = self.console_text(only_problems=True, limit=15) if console else ""
         cues = "\n".join(d.get("cues") or [])
         return (f"Browser page: {d['title']}\nURL: {d['url']}\n\nPage text:\n{d['text'] or '(empty)'}\n\n"
                 + (f"Visual cues (meaning shown by colour/style, not in the text):\n{cues[:1500]}\n\n" if cues else "") +
-                f"Clickable / fillable elements (use their numbers):\n{els or '(none)'}"
+                ("" if find else "Clickable / fillable elements (use their numbers):\n") + (els or "(none)")
                 + (f"\n\nConsole errors/warnings on this page:\n{problems}" if problems else ""))
 
     def _center(self, n: int):

@@ -31,7 +31,7 @@ class Action:
     @property
     def browser_read(self) -> bool:
         """Browser actions that only look (run without asking)."""
-        return self.kind in ("search", "browse", "page", "scroll", "fetch", "extract")
+        return self.kind in ("search", "browse", "page", "scroll", "fetch", "extract", "back", "wait")
 
     @property
     def label(self) -> str:
@@ -41,7 +41,8 @@ class Action:
             "delete": f"Delete {self.path}", "open": f"Open {self.path}",
             "run": f"Run {self.path} code ({len(self.content.splitlines())} lines)",
             "search": f'Search the web for "{self.path}"', "fetch": f"Fetch {self.path} through the browser", "browse": f"Open {self.path} in the browser",
-            "page": "Read the browser page",
+            "page": (f'Find "{self.path}" on the page' if self.path else "Read the browser page"),
+            "back": "Go back to the previous page", "wait": f"Wait for {self.path or 'the page'}",
             "extract": "Extract tables and lists from the page" + (f' ("{self.path}")' if self.path else ""), "scroll": f"Scroll the page {self.path}",
             "click": (f"Open row {self.path} of the extracted data" if self.extra == "row" else f"Click [{self.path}] in the browser"), "press": f"Press {self.path} in the browser",
             "type": f'Type "{self.content[:60]}" into [{self.path}]' + (" and submit" if self.extra == "submit" else ""),
@@ -52,7 +53,7 @@ class Action:
         return {"kind": self.kind, "path": self.path, "content": self.content, "extra": self.extra, "label": self.label}
 
 
-BROWSER_KINDS = ("search", "browse", "page", "scroll", "click", "type", "press", "js", "fetch", "extract")
+BROWSER_KINDS = ("search", "browse", "page", "scroll", "click", "type", "press", "js", "fetch", "extract", "back", "wait")
 
 
 THINK = re.compile(r"<think>[\s\S]*?(</think>|$)", re.I)
@@ -64,7 +65,10 @@ B_SEARCH = re.compile(r'<search\s+(?:query|q)\s*=\s*"([^"]+)"\s*/?>', re.I)
 B_BROWSE = re.compile(r'<(?:browse|goto|navigate)\s+(?:url|href)\s*=\s*"([^"]+)"\s*/?>', re.I)
 B_OPEN_URL = re.compile(r'<open\s+(?:url|href)\s*=\s*"([^"]+)"\s*/?>', re.I)
 B_FETCH = re.compile(r'<fetch\s+(?:url|href)\s*=\s*"([^"]+)"\s*/?>', re.I)
-B_PAGE = re.compile(r'<page\s*/?>', re.I)
+B_PAGE = re.compile(r'<page(?:\s+(?:find|query|q)\s*=\s*"([^"]*)")?\s*/?>', re.I)
+B_BACK = re.compile(r'<back\s*/?>', re.I)
+B_WAIT = re.compile(r'<wait(?:\s+(?:for|text|seconds|s)\s*=\s*"([^"]*)")?\s*/?>', re.I)
+NOTE = re.compile(r'<note>\s*([\s\S]*?)\s*</note>', re.I)
 B_EXTRACT = re.compile(r'<extract(?:\s+(?:query|q|what|about)\s*=\s*"([^"]*)")?\s*/?>', re.I)
 B_SCROLL = re.compile(r'<scroll(?:\s+(?:dir|direction)\s*=\s*"([^"]*)")?\s*/?>', re.I)
 B_CLICK = re.compile(r'<click\s+(n|id|element|row)\s*=\s*"?(\d+)"?\s*/?>', re.I)
@@ -78,7 +82,7 @@ def strip_thinking(text: str) -> str:
     text = THINK.sub("", text).replace("</think>", "")
     return re.sub("[\u2063\u200b\u200c\u200d\u2060\ufeff]", "", text).strip()
 
-TAG_ANY = re.compile(r"<(write|run|type|js)\b[\s\S]*?(</\1>|$)|<[a-z]+\b[^>]*/?>", re.I)
+TAG_ANY = re.compile(r"<(write|run|type|js|note)\b[\s\S]*?(</\1>|$)|<[a-z]+\b[^>]*/?>", re.I)
 
 
 def prose_of(reply: str) -> str:
@@ -134,6 +138,10 @@ YOU HAVE YOUR OWN WEB BROWSER (the user watches it live in the Browser tab and s
 <press key="Enter"/>                          press a key (Enter, Tab, Escape, PageDown, ArrowDown...)
 <scroll dir="down"/>                          scroll down (or up) and read what is visible
 <js>return document.querySelectorAll('tr').length</js>   run JavaScript on the page to read or change its data
+<page find="sign in"/>                        list the page's elements whose text matches (when the one you need isn't listed)
+<back/>                                       go back to the previous page
+<wait for="Results"/>                         wait until that text appears (pages that load slowly); <wait/> waits 2 seconds
+<note>fact you found, with its link</note>    save a finding: notes stay in front of you for the whole task, even when old pages are cut
 Use the browser for anything current or online (news, prices, deals, weather, sports, docs, accounts the user is logged in to).
 For news, prices, deals, shops, weather or anything "latest", ALWAYS start with <search>, then <browse> one of the result links.
 Never make up or guess a web address. Only <browse> addresses the user gave you or that appeared in a result.
@@ -172,7 +180,15 @@ Rules:
 - Include rows with no matches when asked (LEFT JOIN + COALESCE), and check totals add up.
 - When a test fails, first check whether your expected values are wrong before changing working code.
 - If code fails, change it before running again. Never run the exact same code twice.
-- Never repeat the same search or open the same page twice. Two or three lookups are usually enough: then answer.
+- Never repeat the same search or open the same page twice. For a simple question two or three lookups are usually
+  enough: then answer. A task on a website (find, fill in, compare, go through several pages) takes as many steps as it needs.
+- MULTI-STEP BROWSER TASKS: start with a short numbered plan (2-6 lines), then do ONE step per reply and stop to see the
+  result. After every click or typing, check the new page really shows what you expected before the next step.
+  "Nothing on the page changed" means the step failed: try another way, never pretend it worked.
+  Save every finding the user will need (names, prices, links, answers) with <note>...</note> as soon as you see it.
+  Stuck after two tries? Change approach: the site's own search box, a direct URL with the words in it
+  (e.g. https://site/search?q=words), <page find="..."/>, <scroll/>, <js> to click by text, or <search> for another site.
+  Keep going until every part of the task is done, then give the final answer from your notes and the pages.
 - Once your code runs and one test confirms it works, stop testing and tell the user the result.
 - Never accept cookies or sign up for anything unless the user asks.
 - If the user rejects one of your actions, don't ask for it again: answer with what you already have.
@@ -214,7 +230,11 @@ def parse(raw: str) -> list[Action]:
     for m in B_FETCH.finditer(reply):
         found.append((m.start(), Action("fetch", m.group(1).strip())))
     for m in B_PAGE.finditer(reply):
-        found.append((m.start(), Action("page", "")))
+        found.append((m.start(), Action("page", (m.group(1) or "").strip())))
+    for m in B_BACK.finditer(reply):
+        found.append((m.start(), Action("back", "")))
+    for m in B_WAIT.finditer(reply):
+        found.append((m.start(), Action("wait", (m.group(1) or "").strip())))
     for m in B_EXTRACT.finditer(reply):
         found.append((m.start(), Action("extract", (m.group(1) or "").strip())))
     for m in B_SCROLL.finditer(reply):
@@ -236,9 +256,14 @@ def parse(raw: str) -> list[Action]:
     out = []
     for _, a in found:
         # Repeated clicks/typing in one reply are real steps (e.g. type, Add, type, Add): keep them.
-        if a.kind in ("click", "type", "press", "scroll", "js") or a not in out:
+        if a.kind in ("click", "type", "press", "scroll", "js", "back", "wait") or a not in out:
             out.append(a)
     return out
+
+
+def notes(raw: str) -> list[str]:
+    """Facts the model saved with <note>...</note> during a task (kept even when old results are cut)."""
+    return [re.sub(r"\s+", " ", n).strip()[:300] for n in NOTE.findall(strip_thinking(raw)) if n.strip()]
 
 
 RUN_INTENT = re.compile(r"\b(run|test|execute|try|check|works?)\b", re.I)
@@ -387,8 +412,16 @@ def execute_browser(a: Action, browser) -> str:
                     "To open a row's main link use <click row=\"N\"/> (N = the row's number here; NOT the same as page element numbers). "
                     "For another link in a row (e.g. its comments), use <browse url=\"that link\"/>:\n" + browser.extract(a.path))
         if a.kind == "page":
-            r = browser.describe()
+            r = browser.describe(find=a.path) if a.path else browser.describe()
             return r + blocked_hint(r)
+        if a.kind == "back":
+            before = browser.signature()
+            browser.history(-1)
+            if browser.signature() == before:
+                return "There's no earlier page to go back to. Use <browse url=\"...\"/> instead."
+            return "Went back. Now:\n" + browser.describe(4000)
+        if a.kind == "wait":
+            return _wait(browser, a.path)
         if a.kind == "fetch":
             r = browser.fetch_raw(a.path)
             return r + blocked_hint(r)
@@ -408,18 +441,54 @@ def execute_browser(a: Action, browser) -> str:
                 browser.navigate(link)
                 r = f"Opened row {a.path} of the extracted data ({link}). Now:\n" + browser.describe(4000)
                 return r + blocked_hint(r)
+            before = browser.signature()
             browser.click_element(int(a.path))
             r = "Clicked. Now:\n" + browser.describe(4000)
-            return r + blocked_hint(r)
+            return _unchanged(browser, before, f"clicking [{a.path}]") + r + blocked_hint(r)
         if a.kind == "type":
+            before = browser.signature()
             browser.fill(int(a.path), a.content, submit=(a.extra == "submit"))
-            return ("Typed and submitted. Now:\n" if a.extra == "submit" else "Typed. Now:\n") + browser.describe(4000)
+            warn = _unchanged(browser, before, "submitting") if a.extra == "submit" else ""
+            return warn + ("Typed and submitted. Now:\n" if a.extra == "submit" else "Typed. Now:\n") + browser.describe(4000)
         if a.kind == "press":
+            before = browser.signature()
             browser.key(a.path)
             browser.wait_loaded(5)
-            return f"Pressed {a.path}. Now:\n" + browser.describe(4000)
+            return _unchanged(browser, before, f"pressing {a.path}") + f"Pressed {a.path}. Now:\n" + browser.describe(4000)
         if a.kind == "js":
             return "Script result:\n" + browser.run_js(a.content)
     except Exception as e:
         return f"Browser error ({a.label}): {e}"
     return "Unknown browser action"
+
+
+def _unchanged(browser, before: str, what: str) -> str:
+    """Small models assume every click worked. Say so plainly when the page didn't change at all."""
+    if not before:
+        return ""
+    import time as _t
+    for _ in range(3):           # pages that update a moment later (menus, results loading)
+        if browser.signature() != before:
+            return ""
+        _t.sleep(0.5)
+    return (f"⚠ Nothing on the page changed after {what}. It probably didn't work. Don't assume it did: try a "
+            "different element (a nearby link/button with the same words), <page find=\"words\"/> to find the right "
+            "one, <press key=\"Enter\"/>, or <js> to click it by its text.\n\n")
+
+
+def _wait(browser, what: str) -> str:
+    """<wait/> lets pages that load results after a delay finish. With text, waits until it appears (max 15 s)."""
+    import time as _t
+    secs = re.fullmatch(r"\s*(\d+(?:\.\d+)?)\s*s?(econds?)?\s*", what or "")
+    if not what or secs:
+        _t.sleep(min(float(secs.group(1)) if secs else 2.0, 10))
+        return "Waited. Now:\n" + browser.describe(4000)
+    end = _t.time() + 15
+    while _t.time() < end:
+        try:
+            if browser.eval(f"(document.body ? document.body.innerText : '').toLowerCase().includes({__import__('json').dumps(what.lower())})", 5):
+                return f'"{what}" is on the page now:\n' + browser.describe(4000)
+        except Exception:
+            pass
+        _t.sleep(0.5)
+    return f'Waited 15 seconds and "{what}" still is not on the page. Now:\n' + browser.describe(4000)
