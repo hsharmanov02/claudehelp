@@ -305,7 +305,8 @@ class App:
             (WEB_WORDS.search(text) or URL_IN.search(text)) and TASK_WORDS.search(text))
         self.task_notes = []
         self.visited = []
-        self.rethink = self.browser_task      # plan the task with (capped) thinking on the first step
+        self.rethink = self.browser_task
+        self.choice_checked = False      # plan the task with (capped) thinking on the first step
         self.steps_left = 30 if self.browser_task else 12
         self.total_steps = 0
         self.last_reply = None
@@ -612,6 +613,8 @@ class App:
                 self.repeats += 1
                 self._msg("tool", "A tool tag in your reply wasn't understood, so nothing was done. "
                                   "Write it exactly like the examples, e.g. <search query=\"words\"/>.")
+                continue
+            if self._unchecked_choice(actions):
                 continue
             if not actions and self._skipped_navigation():
                 continue
@@ -922,6 +925,38 @@ class App:
         if a.kind in ("browse", "click", "type", "press", "fill", "sitesearch", "back"):
             self.moved = True
         return tools.execute_browser(a, self.browser)
+
+    COMPARE = re.compile(r"\b(cheapest|lowest|highest|best|most|least|fastest|biggest|smallest|largest|newest|oldest|"
+                         r"compare|top[- ]rated|better|lowest[- ]priced)\b", re.I)
+    COMMIT = re.compile(r"add to (basket|cart|bag|trolley)|^\W*add\b|\bbuy\b|checkout|check out|place order|order now|"
+                        r"\bbook\b|purchase|\bpay\b|reserve|subscribe", re.I)
+
+    def _unchecked_choice(self, actions) -> bool:
+        """The user wants the cheapest/best of something. Models grab the first option and call it the cheapest.
+        Before the first add-to-basket/buy click (or the final answer), make it list every option's value once."""
+        if not getattr(self, "browser_task", False) or getattr(self, "choice_checked", False):
+            return False
+        m = self.COMPARE.search(self.messages_question() or "")
+        if not m:
+            return False
+        last = next((x["text"] for x in reversed(self.messages) if x["role"] == "tool"), "")
+
+        def commits(a):
+            if a.kind == "click" and a.extra == "text":
+                return bool(self.COMMIT.search(a.path))
+            if a.kind == "click" and a.extra != "row":
+                el = re.search(rf"^\[{re.escape(a.path)}\] \S+ \"([^\"]*)\"", last, re.M)
+                return bool(el and self.COMMIT.search(el.group(1)))
+            return a.kind == "fill" and a.extra == "submit" and bool(self.COMMIT.search(a.content))
+        if actions and not any(commits(a) for a in actions):
+            return False
+        self.choice_checked = True
+        self.rethink = True
+        self._msg("tool", f'Check before you choose: the user asked for the {m.group(1).lower()}. Have you seen the '
+                          "deciding value (price, rating, size...) of EVERY option, not just the first? Write each one as a "
+                          "note, e.g. <note>Option A: £12.50</note>. If any option's value isn't on a page you've seen yet "
+                          "(e.g. prices only on product pages), open it first. Only then pick the right one and carry on.")
+        return True
 
     NAV_ASK = re.compile(r"\b(open|click|go to|go into|navigate|visit|switch to|press)\b", re.I)
 

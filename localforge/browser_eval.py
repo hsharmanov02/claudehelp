@@ -122,6 +122,16 @@ def run_eval(agent, model, label, log=print, limit=2700):
     log(f"=== {label}: {app.status}")
     app.browser.ensure()          # fail fast if the browser can't start on this machine
     log(f"browser ok: {app.browser.exe}")
+    thinks = []
+    orig = app.engine.chat
+
+    def spy(messages, *a, **k):
+        r = orig(messages, *a, **k)
+        think = k.get("think", a[3] if len(a) > 3 else False)
+        if think:
+            thinks.append(f"{len(app.engine.last_reasoning)} chars{' (capped)' if app.engine.last_finish == 'think_cap' else ''}")
+        return r
+    app.engine.chat = spy
     score, total = 0, 0
     for name, task, check in tasks(base):
         STATE.update(basket=[], signup=None)
@@ -139,6 +149,8 @@ def run_eval(agent, model, label, log=print, limit=2700):
         ok = did and said
         score += ok
         total += 1
+        log(f"\n(thinking: {', '.join(thinks) or 'none'})")
+        thinks.clear()
         log(f"\n##### {label} {name}: {'PASS' if ok else 'FAIL'} (did it: {did}, answer right: {said}) "
             f"{len(answers)} replies, {time.time() - t0:.0f}s")
         for m in app.messages:

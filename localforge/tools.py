@@ -201,6 +201,8 @@ Rules:
   result. After every click or typing, check the new page really shows what you expected before the next step.
   "Nothing on the page changed" means the step failed: try another way, never pretend it worked.
   Save every finding the user will need (names, prices, links, answers) with <note>...</note> as soon as you see it.
+  "Cheapest", "best", "highest" etc.: first get EVERY option's value (open each one if the list doesn't show it),
+  note each, then choose. Never call the first option the cheapest without checking the others.
   Prefer <fill> for forms, <sitesearch> on shops/sites and <click text="..."/> for buttons: they can't pick the wrong number.
   Never write the final answer in the same reply as an action: you haven't seen the result yet.
   Stuck after two tries? Change approach: the site's own search box, a direct URL with the words in it

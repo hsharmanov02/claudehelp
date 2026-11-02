@@ -95,3 +95,15 @@ def test_fill_and_click_text_tags():
     assert tools.form_pairs(acts[0].content) == [["Full name", "Alex Doe"], ["Email", "a@b.com"], ["Terms", "yes"]]
     assert acts[2].browser_read and not acts[0].browser_read
     assert tools.prose_of('<fill>\nA: b\n</fill> ok') == "ok"
+
+
+def test_cheapest_check_before_add_to_basket():
+    app = _app(FakeEngine([]))
+    app.messages = [{"role": "user", "text": "go to shop.com and add the cheapest blue kettle to my basket", "modelText": None}]
+    app._msg = lambda role, text, model_text=None: app.messages.append(
+        {"role": role, "text": text, "modelText": model_text}) or app.messages[-1]
+    app._msg("tool", 'Browser page: Blue kettle\nURL: x\n\n[1] link "Home"\n[2] button "Add to basket"')
+    assert app._unchecked_choice(tools.parse('<click n="1"/>')) is False
+    assert app._unchecked_choice(tools.parse('<click n="2"/>')) is True
+    assert "EVERY option" in app.messages[-1]["text"]
+    assert app._unchecked_choice(tools.parse('<click n="2"/>')) is False     # only once
