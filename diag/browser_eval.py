@@ -112,6 +112,8 @@ app.settings.set("nCtx", 16384)
 m = app.store.find(MODEL) or app.store.find(Path(MODEL).name) or next(iter(app.store.local_models()), None)
 assert m and app.load_model(m["path"], wait=True), (app.status, app.store.local_models())
 print(f"=== {LABEL}: {app.status}", flush=True)
+app.browser.ensure()          # fail fast if the browser can't start on this machine
+print("browser ok:", app.browser.exe, flush=True)
 score = 0
 for name, task, check in TASKS:
     STATE.update(basket=[], signup=None)

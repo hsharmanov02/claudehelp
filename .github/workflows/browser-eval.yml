@@ -16,6 +16,11 @@ jobs:
       - uses: actions/setup-python@v5
         with: { python-version: "3.12" }
       - run: pip install websocket-client psutil requests || true; pip install -r requirements.txt || true
+      - name: Chrome without sandbox (CI runners block Chrome's sandbox)
+        run: |
+          printf '#!/bin/sh\nexec google-chrome --no-sandbox "$@"\n' > $PWD/chrome-ns && chmod +x $PWD/chrome-ns
+          echo "LOCALFORGE_BROWSER=$PWD/chrome-ns" >> $GITHUB_ENV
+          google-chrome --version
       - name: llama.cpp
         env: { GH_TOKEN: "${{ github.token }}" }
         run: |
