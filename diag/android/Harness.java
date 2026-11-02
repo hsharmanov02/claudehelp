@@ -29,17 +29,19 @@ public class Harness {
             "What did I ask you just before this message? Quote it.",
             "What is my dog's name and my favourite colour?"
         };
-        boolean recap = a.length > 2 && a[2].equals("recap");
-        if (recap) msgs.set(0, new String[]{"system", sys + "\n- You remember this whole chat: the user's earlier messages and your replies are above. When the user refers to something earlier (\"my last question\", \"that\", \"again\"), use them. Never say you can't remember."});
+        String v = a.length > 2 ? a[2] : "plain";
+        if (!v.equals("plain")) msgs.set(0, new String[]{"system", sys + "\n- You remember this whole chat: the user's earlier messages and your replies are above. When the user refers to something earlier, use them. Never say you can't remember."});
+        java.util.regex.Pattern back = java.util.regex.Pattern.compile("(?i)\\b(previous|last|earlier|before|prior|first)\\b.{0,30}\\b(prompt|question|message|request|ask|asked|said|typed|wrote)|what (did|was) i (just )?(ask|say|said|tell|type|write|want)|\\b(remind me what|you said|i said|i asked|i told you|i just asked)\\b");
         List<String> asked = new ArrayList<>();
         for (String t : turns) {
             String sent = t;
-            if (recap && !asked.isEmpty()) {
-                StringBuilder r = new StringBuilder("[Chat so far. My earlier messages, oldest first:\n");
-                for (int i = 0; i < asked.size(); i++) r.append(i + 1).append(". \"").append(asked.get(i)).append("\"")
-                    .append(i == asked.size() - 1 ? "  <- my previous message, the one just before this one" : "").append("\n");
-                r.append("]\nMy new message: ");
-                sent = r + t;
+            if (v.equals("targeted") && !asked.isEmpty() && back.matcher(t).find()) {
+                StringBuilder r = new StringBuilder("\n\n[Note from the app: my previous message, the one just before this one, was: \"" + asked.get(asked.size() - 1) + "\"");
+                if (asked.size() > 1) {
+                    r.append(". My earlier messages, oldest first: ");
+                    for (int i = 0; i < asked.size() - 1; i++) r.append(i + 1).append(". \"").append(asked.get(i)).append("\" ");
+                }
+                sent = t + r + "]";
             }
             msgs.add(new String[]{"user", sent});
             String cached = gen(shared, msgs);

@@ -2,6 +2,7 @@ name: Memory diagnostic
 on: push
 jobs:
   diag:
+    if: false
     runs-on: ubuntu-latest
     timeout-minutes: 40
     steps:
@@ -51,4 +52,4 @@ jobs:
       - name: Replay chat through the native engine
         run: |
           cd diag/android && javac -d out Harness.java com/localforge/app/engine/*.java
-          for m in q35 q3 q4; do for v in plain recap; do echo "===== $m $v"; ls -la $GITHUB_WORKSPACE/m/$m.gguf; LD_LIBRARY_PATH=$GITHUB_WORKSPACE/nb java -Djava.library.path=$GITHUB_WORKSPACE/nb -cp out Harness $GITHUB_WORKSPACE/m/$m.gguf $GITHUB_WORKSPACE/sys.txt $v 2>native.log || tail -5 native.log; done; done
+          for m in q35 q3 q4; do for v in sysonly targeted; do echo "===== $m $v"; ls -la $GITHUB_WORKSPACE/m/$m.gguf; LD_LIBRARY_PATH=$GITHUB_WORKSPACE/nb java -Djava.library.path=$GITHUB_WORKSPACE/nb -cp out Harness $GITHUB_WORKSPACE/m/$m.gguf $GITHUB_WORKSPACE/sys.txt $v 2>native.log || tail -5 native.log; done; done
