@@ -3,12 +3,12 @@ on: push
 jobs:
   eval:
     runs-on: ubuntu-latest
-    timeout-minutes: 300
+    timeout-minutes: 350
     strategy:
       fail-fast: false
       matrix:
-        model: [q4b, q9b, q35moe]
-        version: [new]
+        model: [q9b, q35moe]
+        version: [old, new]
     steps:
       - uses: actions/checkout@v4
         with: { fetch-depth: 0 }

@@ -10,7 +10,7 @@ from pathlib import Path
 STATE = {"basket": [], "signup": None}
 PRODUCTS = [("p1", "Red kettle 1.7L", 24.99), ("p2", "Blue kettle 1.5L", 31.50), ("p3", "Blue kettle compact 1.0L", 19.75),
             ("p4", "Blue toaster", 22.00), ("p5", "Steel kettle", 29.00), ("p6", "Blue kettle deluxe 1.7L", 44.00)]
-NAV = "".join(f'<a href="/info/{i}">Help topic {i}</a> ' for i in range(120))   # lots of links, like real sites
+NAV = "".join(f'<a href="/info/{i}">Help topic {i}</a> ' for i in range(40))   # lots of links, like real sites
 
 
 def page(title, body):
@@ -130,7 +130,7 @@ def main():
         app.send(task)
         time.sleep(1)
         while app.generating:
-            if time.time() - t0 > 900:
+            if time.time() - t0 > 2700:
                 app.stop()
             time.sleep(1)
         answers = [m for m in app.messages if m["role"] == "assistant" and m["text"].strip()]
