@@ -905,12 +905,26 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                     }
                     val sb = StringBuilder()
                     var pieces = 0
+                    var prevLine = ""
+                    var sameLineRun = 0
+                    var streamLoop = false
                     var full = try {
                         val hist = history()
                         val first = Engine.chat(hist, maxTokens, temperature, noThink = !thinkHarder) { piece ->
                             sb.append(piece)
                             pieces++
                             main.post { reply.text += piece }
+                            // Loop stopper 3 (the common one on tiny models): the same short line streamed over and
+                            // over inside ONE reply, e.g. "<page/>" on every line. Cut it off as soon as it's clear.
+                            if (!streamLoop && piece.contains("\n")) {
+                                val lines = sb.split("\n")
+                                if (lines.size >= 2) {
+                                    val done = lines[lines.size - 2].trim()
+                                    if (done.isNotEmpty() && done.length <= 80 && done == prevLine) {
+                                        if (++sameLineRun >= 4) { streamLoop = true; Engine.stop() }
+                                    } else { prevLine = done; sameLineRun = 0 }
+                                }
+                            }
                             // Thinking that goes round in circles: cut it off and make the model act on what it has.
                             if (thinkHarder && !thinkCut && sb.contains("<think>") && !sb.contains("</think>") &&
                                 (pieces > thinkTokenBudget || System.currentTimeMillis() - replyStart > thinkTimeBudgetMs)) {
@@ -943,6 +957,23 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                             "The model is too slow or too small for this task on this phone. Try a simpler question, " +
                             "a faster/bigger model, or say \"continue\".")
                         break
+                    }
+                    // A reply that got stuck repeating one line: collapse the repeats and nudge it to move on.
+                    if (streamLoop) {
+                        full = full.lineSequence().fold(StringBuilder() to "") { (acc, last), line ->
+                            if (line.trim() == last && line.trim().isNotEmpty()) acc to last
+                            else { if (acc.isNotEmpty()) acc.append("\n"); acc.append(line) to line.trim() }
+                        }.first.toString()
+                        reply.text = FileTools.stripThinking(full)
+                        repeats++
+                        if (repeats >= 2) {
+                            messages += UiMessage(Role.NOTE, "Stopped: the model got stuck repeating the same step. " +
+                                "This is a sign it's too small for this task — a bigger or faster model (Models tab) will do much better.")
+                            break
+                        }
+                        messages += UiMessage(Role.TOOL, "You repeated the same line many times instead of answering. " +
+                            "Do NOT do that. Take ONE concrete next step, or just answer the user in plain sentences.")
+                        continue
                     }
                     reply.text = FileTools.stripThinking(full)
                     if (reply.text.isEmpty()) reply.text = if (stopRequested) "(stopped)" else "(no reply)"
