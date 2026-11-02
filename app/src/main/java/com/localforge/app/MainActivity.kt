@@ -30,6 +30,9 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Code
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.Home
+import androidx.compose.material.icons.filled.Public
+import com.localforge.app.agent.WebBrowser
+import com.localforge.app.ui.BrowserScreen
 import androidx.compose.material.icons.filled.ViewList
 import androidx.compose.material3.Icon
 import androidx.compose.runtime.Composable
@@ -59,6 +62,8 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        WebBrowser.init(this)
+        WebBrowser.attachActivity(this)
         // Needed to show "working in background" / "reply ready" notifications on Android 13+.
         if (Build.VERSION.SDK_INT >= 33 &&
             ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
@@ -80,7 +85,13 @@ class MainActivity : ComponentActivity() {
     override fun onStop() {
         app.visible = false
         vm.saveChat()
+        WebBrowser.saveCookies()
         super.onStop()
+    }
+
+    override fun onDestroy() {
+        WebBrowser.attachActivity(null)
+        super.onDestroy()
     }
 
     override fun onResume() {
@@ -116,6 +127,7 @@ fun App(vm: AppViewModel) {
                     Tab.HOME -> HomeScreen(vm)
                     Tab.MODELS -> ModelsScreen(vm)
                     Tab.CODE -> CodeScreen(vm)
+                    Tab.BROWSER -> BrowserScreen(vm)
                     Tab.FILES -> FilesScreen(vm)
                 }
             }
@@ -130,6 +142,7 @@ private fun BottomBar(current: Tab, onSelect: (Tab) -> Unit) {
         Tab.HOME to Icons.Filled.Home,
         Tab.MODELS to Icons.Filled.ViewList,
         Tab.CODE to Icons.Filled.Code,
+        Tab.BROWSER to Icons.Filled.Public,
         Tab.FILES to Icons.Filled.Folder
     )
     Row(
@@ -151,7 +164,7 @@ private fun BottomBar(current: Tab, onSelect: (Tab) -> Unit) {
 private fun NavItem(icon: ImageVector, selected: Boolean, onClick: () -> Unit) {
     Box(
         Modifier
-            .size(60.dp)
+            .size(54.dp)
             .clip(CircleShape)
             .background(if (selected) Color.White else Color.Transparent)
             .clickable(onClick = onClick),

@@ -65,8 +65,9 @@ import com.localforge.app.Role
 import com.localforge.app.UiMessage
 import com.localforge.app.agent.FileAction
 import com.localforge.app.agent.FileTools
+import com.localforge.app.agent.BrowserTools
 
-private sealed class Segment {
+internal sealed class Segment {
     data class Prose(val text: String) : Segment()
     data class Code(val lang: String, val code: String) : Segment()
 }
@@ -80,7 +81,26 @@ private val innerFence = Regex("```[\\w+#.-]*[ \\t]*\\r?\\n?|```")
 
 private val findTagDisplay = Regex("""<find\s+(?:query|name|q)\s*=\s*"([^"]+)"\s*/?>""", RegexOption.IGNORE_CASE)
 
+private val browserTagDisplay = Regex(
+    """<(search|browse|goto|navigate|fetch|page|extract|click|press|scroll)\b([^<>]*?)/?>|<type\s+(?:n|id|element)\s*=\s*"?(\d+)"?[^>]*>[\s\S]*?(</type>|$)|<js>[\s\S]*?(</js>|$)""",
+    RegexOption.IGNORE_CASE
+)
+private val attr = Regex("""(\w+)\s*=\s*"?([^"]*)"?""")
+
+/** Browser tags shown as friendly step chips ("🌐 Open …", "📊 Extract data", "🖱 Click [3]") instead of raw tags. */
+private fun browserChip(m: MatchResult): String {
+    val whole = m.value
+    if (whole.startsWith("<js", true)) return "\n" + BrowserTools.chip("js", "") + "\n"
+    if (m.groupValues[3].isNotEmpty()) return "\n" + BrowserTools.chip("type", m.groupValues[3]) + "\n"
+    var kind = m.groupValues[1].lowercase()
+    if (kind == "goto" || kind == "navigate") kind = "browse"
+    val attrs = attr.findAll(m.groupValues[2]).associate { it.groupValues[1].lowercase() to it.groupValues[2] }
+    val path = attrs["url"] ?: attrs["href"] ?: attrs["query"] ?: attrs["q"] ?: attrs["n"] ?: attrs["row"] ?: attrs["key"] ?: attrs["dir"] ?: ""
+    return "\n" + BrowserTools.chip(kind, path, if (attrs.containsKey("row")) "row" else "") + "\n"
+}
+
 private fun prettify(text: String): String = FileTools.stripThinking(text)
+    .replace(browserTagDisplay) { browserChip(it) }
     .replace(findTagDisplay) { "🔎 search phone for \"${it.groupValues[1]}\"" }
     .replace(runTagDisplay) {
         val lang = it.groupValues[1].ifBlank { "python" }
@@ -221,7 +241,7 @@ private fun Intro(vm: AppViewModel) {
 }
 
 @Composable
-private fun MessageView(vm: AppViewModel, m: UiMessage, onSave: (Segment.Code) -> Unit) {
+internal fun MessageView(vm: AppViewModel, m: UiMessage, onSave: (Segment.Code) -> Unit = {}) {
     when (m.role) {
         Role.USER -> Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
             Text(
@@ -256,7 +276,9 @@ private fun MessageView(vm: AppViewModel, m: UiMessage, onSave: (Segment.Code) -
                 Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(C.CardInner)
                     .clickable { open = !open }.padding(12.dp)
             ) {
-                Text(if (open) "📂 File results (tap to hide)" else "📂 File results sent to the assistant (tap to view)", color = C.Muted, fontSize = 13.sp)
+                val web = Regex("^(Browser|Web search|Data |Clicked|Typed|Pressed|Scrolled|Script result|Fetched|Opened row|Did \\d+ of|Skipped|You already|No search)").containsMatchIn(m.text)
+                val kind = if (web) "🌐 Page results" else "📂 Results"
+                Text(if (open) "$kind (tap to hide)" else "$kind sent to the assistant (tap to view)", color = C.Muted, fontSize = 13.sp)
                 if (open) Text(m.text, color = C.Text, fontFamily = FontFamily.Monospace, fontSize = 12.sp, modifier = Modifier.padding(top = 6.dp))
             }
         }
@@ -328,6 +350,7 @@ private fun CodeBlock(seg: Segment.Code, onSave: (Segment.Code) -> Unit, onRun: 
 private fun ActionCard(vm: AppViewModel, p: PendingAction) {
     val danger = p.action is FileAction.Delete
     val isRun = p.action is FileAction.Run
+    val isWeb = p.action is FileAction.Browser || p.action is FileAction.Batch
     Column(
         Modifier
             .fillMaxWidth()
@@ -337,10 +360,17 @@ private fun ActionCard(vm: AppViewModel, p: PendingAction) {
             .padding(14.dp)
     ) {
         Text(
-            if (danger) "⚠️ Assistant wants to delete" else if (isRun) "▶ Assistant wants to run this code" else "Assistant wants to change files",
+            if (danger) "⚠️ Assistant wants to delete" else if (isRun) "▶ Assistant wants to run this code"
+            else if (isWeb) "🖱 Assistant wants to do this on the page" else "Assistant wants to change files",
             color = if (danger) C.Bad else C.Accent, fontWeight = FontWeight.SemiBold, fontSize = 13.sp
         )
-        Text(p.action.label, color = C.Text, fontFamily = FontFamily.Monospace, fontSize = 13.sp)
+        val act = p.action
+        if (act is FileAction.Batch) {
+            act.steps.forEachIndexed { i, st -> Text("${i + 1}. ${st.label}", color = C.Text, fontFamily = FontFamily.Monospace, fontSize = 13.sp) }
+        } else Text(act.label, color = C.Text, fontFamily = FontFamily.Monospace, fontSize = 13.sp)
+        if (act is FileAction.Browser && act.kind == "js") {
+            Text(act.content.take(400), color = C.Muted, fontFamily = FontFamily.Monospace, fontSize = 11.sp, maxLines = 8, modifier = Modifier.padding(top = 6.dp))
+        }
         val w = p.action
         if (w is FileAction.Write) {
             Text(
@@ -355,7 +385,7 @@ private fun ActionCard(vm: AppViewModel, p: PendingAction) {
                 Button(
                     onClick = { vm.approve(p) },
                     colors = ButtonDefaults.buttonColors(containerColor = if (danger) C.Bad else C.Accent)
-                ) { Text(if (danger) "Delete" else if (isRun) "Run" else "Approve") }
+                ) { Text(if (danger) "Delete" else if (isRun) "Run" else if (isWeb) "Do it" else "Approve") }
                 OutlinedButton(onClick = { vm.reject(p) }) { Text("Skip") }
             }
             ActionStatus.DONE -> Text("✓ ${p.result ?: "Working…"}", color = C.Good, fontSize = 13.sp)
@@ -366,7 +396,7 @@ private fun ActionCard(vm: AppViewModel, p: PendingAction) {
 }
 
 @Composable
-private fun InputBar(vm: AppViewModel) {
+internal fun InputBar(vm: AppViewModel, placeholder: String = "Ask for code, a file task or a web search…", onSend: () -> Unit = { vm.send() }) {
     Column(Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 6.dp)) {
         vm.attachment?.let { f ->
             Row(
@@ -384,7 +414,7 @@ private fun InputBar(vm: AppViewModel) {
             OutlinedTextField(
                 value = vm.input,
                 onValueChange = { vm.input = it },
-                placeholder = { Text("Ask for code or a file task…") },
+                placeholder = { Text(placeholder) },
                 maxLines = 6,
                 shape = RoundedCornerShape(24.dp),
                 modifier = Modifier.weight(1f)
@@ -395,7 +425,7 @@ private fun InputBar(vm: AppViewModel) {
                     .size(54.dp)
                     .clip(CircleShape)
                     .background(if (vm.generating) C.Bad else C.Accent)
-                    .clickable { if (vm.generating) vm.stopGenerating() else vm.send() },
+                    .clickable { if (vm.generating) vm.stopGenerating() else onSend() },
                 contentAlignment = Alignment.Center
             ) {
                 Icon(if (vm.generating) Icons.Filled.Stop else Icons.Filled.Send, if (vm.generating) "Stop" else "Send", tint = C.Bg)

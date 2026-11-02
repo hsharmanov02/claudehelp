@@ -28,13 +28,31 @@ object LlamaEngine {
     @JvmStatic external fun nativeLoad(path: String, nCtx: Int, nThreads: Int): Long
     @JvmStatic external fun nativeFree(handle: Long)
     @JvmStatic external fun nativeStop(handle: Long)
-    @JvmStatic external fun nativeFormatChat(handle: Long, roles: Array<String>, contents: Array<String>): ByteArray?
+    @JvmStatic external fun nativeFormatChat(handle: Long, roles: Array<String>, contents: Array<ByteArray>): ByteArray?
     @JvmStatic external fun nativeGenerate(
-        handle: Long, prompt: String, maxTokens: Int, temperature: Float, callback: TokenCallback
+        handle: Long, prompt: ByteArray, maxTokens: Int, temperature: Float, callback: TokenCallback
     ): Int
 }
 
 data class ChatMessage(val role: String, val content: String)
+
+/**
+ * Real UTF-8 for the engine. A half emoji (a lone surrogate, e.g. page text cut in the middle of one)
+ * becomes a plain "?" instead of bytes the tokenizer can't read.
+ */
+fun utf8(s: String): ByteArray {
+    val sb = StringBuilder(s.length)
+    var i = 0
+    while (i < s.length) {
+        val c = s[i]
+        if (Character.isHighSurrogate(c) && i + 1 < s.length && Character.isLowSurrogate(s[i + 1])) {
+            sb.append(c).append(s[i + 1]); i += 2; continue
+        }
+        sb.append(if (Character.isSurrogate(c)) '?' else c)
+        i++
+    }
+    return sb.toString().toByteArray(Charsets.UTF_8)
+}
 
 /** Owns the single loaded model; all native calls run on one background thread. */
 object Engine {
@@ -96,9 +114,9 @@ object Engine {
         val formatted = LlamaEngine.nativeFormatChat(
             h,
             messages.map { it.role }.toTypedArray(),
-            messages.map { it.content }.toTypedArray()
+            messages.map { utf8(it.content) }.toTypedArray()
         ) ?: throw IllegalStateException("This model's chat format isn't supported.")
-        val prompt = String(formatted, Charsets.UTF_8)
+        val prompt = formatted
         val out = StringBuilder()
         var pieces = 0
         var firstAt = 0L

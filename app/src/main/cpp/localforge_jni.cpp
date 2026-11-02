@@ -36,6 +36,16 @@ std::string jstr(JNIEnv * env, jstring s) {
     return out;
 }
 
+// Text from Kotlin arrives as real UTF-8 bytes. GetStringUTFChars gives "modified UTF-8", where an emoji
+// becomes two 3-byte halves the tokenizer can't read (and a half emoji cut off by a page snippet breaks it).
+std::string jbytes(JNIEnv * env, jbyteArray a) {
+    if (!a) return {};
+    jsize n = env->GetArrayLength(a);
+    std::string out((size_t) n, '\0');
+    if (n > 0) env->GetByteArrayRegion(a, 0, n, (jbyte *) out.data());
+    return out;
+}
+
 // Java's NewStringUTF uses "modified UTF-8", so we hand raw bytes to Kotlin instead.
 jbyteArray toBytes(JNIEnv * env, const std::string & s) {
     jbyteArray arr = env->NewByteArray((jsize) s.size());
@@ -145,7 +155,7 @@ Java_com_localforge_app_engine_LlamaEngine_nativeFormatChat(JNIEnv * env, jclass
     size_t total = 0;
     for (jsize i = 0; i < n; ++i) {
         r[i] = jstr(env, (jstring) env->GetObjectArrayElement(roles, i));
-        c[i] = jstr(env, (jstring) env->GetObjectArrayElement(contents, i));
+        c[i] = jbytes(env, (jbyteArray) env->GetObjectArrayElement(contents, i));
         total += r[i].size() + c[i].size();
     }
     for (jsize i = 0; i < n; ++i) msgs[i] = { r[i].c_str(), c[i].c_str() };
@@ -168,7 +178,7 @@ Java_com_localforge_app_engine_LlamaEngine_nativeFormatChat(JNIEnv * env, jclass
 // Runs generation. Calls callback.onToken(byte[]) for each UTF-8-complete chunk;
 // returns 0 on success, negative on error (-1 prompt too long, -2 decode failure).
 JNIEXPORT jint JNICALL
-Java_com_localforge_app_engine_LlamaEngine_nativeGenerate(JNIEnv * env, jclass, jlong handle, jstring jprompt,
+Java_com_localforge_app_engine_LlamaEngine_nativeGenerate(JNIEnv * env, jclass, jlong handle, jbyteArray jprompt,
                                                           jint maxTokens, jfloat temperature, jobject callback) {
     auto * e = (Engine *) handle;
     if (!e) return -3;
@@ -178,7 +188,7 @@ Java_com_localforge_app_engine_LlamaEngine_nativeGenerate(JNIEnv * env, jclass, 
     jmethodID onToken = env->GetMethodID(cbClass, "onToken", "([B)Z");
     if (!onToken) return -4;
 
-    std::string prompt = jstr(env, jprompt);
+    std::string prompt = jbytes(env, jprompt);
 
     int n_prompt = -llama_tokenize(e->vocab, prompt.c_str(), (int32_t) prompt.size(), nullptr, 0, false, true);
     std::vector<llama_token> tokens((size_t) n_prompt);

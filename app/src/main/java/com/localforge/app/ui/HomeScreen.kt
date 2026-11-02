@@ -225,6 +225,15 @@ private fun RuntimeSettings(vm: AppViewModel) {
         }
 
         Spacer(Modifier.height(10.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text("Let the AI click and type in the browser by itself", color = C.Text, fontWeight = FontWeight.SemiBold)
+                Text("Searching and reading pages never ask. With this off, you approve each click, typing step or page script.", color = C.Muted, fontSize = 13.sp)
+            }
+            Switch(checked = vm.browserAutoApprove, onCheckedChange = { vm.updateBrowserAutoApprove(it) })
+        }
+
+        Spacer(Modifier.height(10.dp))
         OutlinedTextField(
             value = tokenDraft,
             onValueChange = { tokenDraft = it; vm.updateHfToken(it) },

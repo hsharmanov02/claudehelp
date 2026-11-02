@@ -15,8 +15,8 @@ android {
         applicationId = "com.localforge.app"
         minSdk = 30
         targetSdk = 36
-        versionCode = 6
-        versionName = "1.5"
+        versionCode = 7
+        versionName = "1.6"
 
         ndk {
             abiFilters += listOf("arm64-v8a")
@@ -92,4 +92,5 @@ dependencies {
     implementation("androidx.compose.material3:material3")
     implementation("androidx.compose.material:material-icons-extended")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
+    implementation("androidx.webkit:webkit:1.12.1")
 }

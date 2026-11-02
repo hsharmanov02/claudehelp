@@ -34,6 +34,31 @@ sealed class FileAction {
         override val readOnly = true
         override val label get() = "Find \"$path\""
     }
+    /** A browser step: [kind] is one of BrowserTools.KINDS, [path] its url/query/element number. */
+    data class Browser(val kind: String, override val path: String, val content: String = "", val extra: String = "") : FileAction() {
+        /** Searching, opening and reading pages run by themselves; clicks, typing and scripts ask first. */
+        override val readOnly = false
+        val browserRead get() = kind in BrowserTools.READ_KINDS
+        override val label get() = when (kind) {
+            "search" -> "Search the web for \"$path\""
+            "fetch" -> "Fetch $path"
+            "browse" -> "Open $path"
+            "page" -> "Read the page"
+            "extract" -> "Extract tables and lists from the page" + if (path.isNotBlank()) " (\"$path\")" else ""
+            "scroll" -> "Scroll the page $path"
+            "click" -> if (extra == "row") "Open row $path of the extracted data" else "Click [$path] on the page"
+            "type" -> "Type \"${content.take(60)}\" into [$path]" + if (extra == "submit") " and press Enter" else ""
+            "press" -> "Press $path on the page"
+            "js" -> "Run a script on the page (${content.lines().size} lines)"
+            else -> kind
+        }
+    }
+    /** Several clicks/typing steps from one reply: one approval card, run in order. */
+    data class Batch(val steps: List<Browser>) : FileAction() {
+        override val path = ""
+        override val readOnly = false
+        override val label get() = "Do ${steps.size} browser steps: " + steps.joinToString("; ") { it.label }.take(300)
+    }
     /** Run code on the phone. [path] holds the language ("python" or "shell"). */
     data class Run(override val path: String, val code: String) : FileAction() {
         override val readOnly = false
@@ -49,7 +74,8 @@ object FileTools {
     private val thinkBlock = Regex("<think>[\\s\\S]*?(</think>|$)", RegexOption.IGNORE_CASE)
 
     /** Removes <think>…</think> reasoning blocks that Qwen3-style models print. */
-    fun stripThinking(text: String): String = text.replace(thinkBlock, "").replace("</think>", "").trim()
+    fun stripThinking(text: String): String =
+        text.replace(thinkBlock, "").replace("</think>", "").replace(Regex("[\u2063\u200b\u200c\u200d\u2060\ufeff]"), "").trim()
     private val writeTag = Regex("""<write\s+path\s*=\s*"([^"]+)"\s*>\r?\n?([\s\S]*?)</write>""", RegexOption.IGNORE_CASE)
     val runTag = Regex("""<run(?:\s+lang(?:uage)?\s*=\s*"([^"]*)")?\s*>\r?\n?([\s\S]*?)(</run>|$)""", RegexOption.IGNORE_CASE)
     private val fencedBlock = Regex("```([\\w+#.-]*)[ \\t]*\\r?\\n([\\s\\S]*?)```")
@@ -85,8 +111,9 @@ object FileTools {
     )
 
     fun systemPrompt(workspace: String, runDir: String, languages: List<String>, overview: String): String = """
-You are LocalForge, an expert coding assistant running fully offline on the user's Android phone.
-Always reply in English. Write clear, correct code and explain it briefly in plain English.
+You are LocalForge, a capable, uncensored assistant and expert programmer running fully offline on the user's Android phone.
+Today is ${java.text.SimpleDateFormat("EEEE d MMMM yyyy", java.util.Locale.UK).format(java.util.Date())}.
+Always reply in English unless the user writes in another language. Write clear, correct code and explain it briefly in plain English.
 
 YOU CAN RUN CODE YOURSELF on this phone in these languages: ${languages.joinToString(", ")}.
 To run code, put the complete program inside a run tag with its language:
@@ -112,12 +139,15 @@ complete new file content here
 <delete path="$workspace/Download/old.zip"/>    delete a file or folder
 Top-level folders on this phone: $overview
 
+${BrowserTools.prompt()}
+
 Rules:
 - Always use full paths starting with $workspace
 - After <find>, <run>, <list> or <read>, stop your reply and wait for the result.
 - If results are already given to you under [Phone files], answer from them directly.
 - Only write, create or delete files when the user asks for it.
 - <write> must contain the entire file, never a partial snippet.
+- Your answer must match the run/browser output exactly. Never invent results, links, prices or numbers.
 - Answer directly. Do not explain your limitations.
 """.trim()
 
@@ -151,7 +181,13 @@ Rules:
             }
             found += m.range.first to action
         }
-        return found.sortedBy { it.first }.map { it.second }.distinct()
+        found += BrowserTools.parse(reply)
+        val out = mutableListOf<FileAction>()
+        for ((_, a) in found.sortedBy { it.first }) {
+            // Repeated clicks/typing in one reply are real steps (type, Add, type, Add): keep them.
+            if ((a is FileAction.Browser && a.kind in setOf("click", "type", "press", "scroll", "js")) || a !in out) out += a
+        }
+        return out
     }
 
     private val runIntent = Regex("\\b(run|test|execute|try|check|works?)\\b", RegexOption.IGNORE_CASE)
@@ -179,6 +215,7 @@ Rules:
         val f = File(action.path)
         when (action) {
             is FileAction.Run -> "Run actions are handled by CodeRunner"
+            is FileAction.Browser, is FileAction.Batch -> "Browser actions are handled by BrowserTools"
             is FileAction.Find -> {
                 val hits = FileIndex.search(action.path, 30)
                 if (!FileIndex.isReady) "The file index is still being built. Try <list> on a folder instead."
