@@ -662,7 +662,7 @@ class App:
                                    "Look at the page above and pick element numbers from it.")
                     continue
                 if a.is_browser and a.browser_read:
-                    if a.kind in ("browse", "search"):
+                    if a.kind in ("browse", "search", "sitesearch", "back"):
                         navigated = True
                     if a.kind == "browse" and os.path.normcase(a.path) in getattr(self, "fresh_pages", set()):
                         self.fresh_pages.discard(os.path.normcase(a.path))
@@ -915,7 +915,7 @@ class App:
                         r"(saved|written|created) (it |the file |the csv |successfully)|tests? (all )?pass", re.I)
 
     def _exec_browser(self, a):
-        if a.kind in ("browse", "click", "type", "press"):
+        if a.kind in ("browse", "click", "type", "press", "fill", "sitesearch", "back"):
             self.moved = True
         return tools.execute_browser(a, self.browser)
 

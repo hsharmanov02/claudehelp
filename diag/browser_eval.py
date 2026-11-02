@@ -6,10 +6,6 @@ import json, re, sys, threading, time, urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-CODE = Path(sys.argv[1]).resolve()
-MODEL, LABEL = sys.argv[2], sys.argv[3]
-sys.path.insert(0, str(CODE))
-from localforge import agent  # noqa: E402
 
 STATE = {"basket": [], "signup": None}
 PRODUCTS = [("p1", "Red kettle 1.7L", 24.99), ("p2", "Blue kettle 1.5L", 31.50), ("p3", "Blue kettle compact 1.0L", 19.75),
@@ -90,9 +86,13 @@ class H(BaseHTTPRequestHandler):
         self.send(page("Not found", ""), 404)
 
 
-srv = ThreadingHTTPServer(("127.0.0.1", 0), H)
-threading.Thread(target=srv.serve_forever, daemon=True).start()
-BASE = f"http://127.0.0.1:{srv.server_port}"
+def serve():
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), H)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    return f"http://127.0.0.1:{srv.server_port}"
+
+
+BASE = serve() if __name__ == "__main__" else ""
 
 TASKS = [
     ("shop", f"Go to {BASE}/ and add the cheapest blue kettle in the shop to my basket, then go to the basket and tell me the basket total.",
@@ -105,38 +105,50 @@ TASKS = [
      lambda ans: (True, "INC-4471" in ans and "900" in ans)),
 ]
 
-app = agent.App()
-app.settings.set("autoApprove", True)
-app.settings.set("browserAutoApprove", True)
-app.settings.set("nCtx", 16384)
-m = app.store.find(MODEL) or app.store.find(Path(MODEL).name) or next(iter(app.store.local_models()), None)
-assert m and app.load_model(m["path"], wait=True), (app.status, app.store.local_models())
-print(f"=== {LABEL}: {app.status}", flush=True)
-app.browser.ensure()          # fail fast if the browser can't start on this machine
-print("browser ok:", app.browser.exe, flush=True)
-score = 0
-for name, task, check in TASKS:
-    STATE.update(basket=[], signup=None)
-    app.clear_chat()
-    t0 = time.time()
-    app.send(task)
-    time.sleep(1)
-    while app.generating:
-        if time.time() - t0 > 900:
-            app.stop()
+
+
+def main():
+    code = Path(sys.argv[1]).resolve()
+    model, label = sys.argv[2], sys.argv[3]
+    sys.path.insert(0, str(code))
+    from localforge import agent
+    MODEL, LABEL = model, label
+    app = agent.App()
+    app.settings.set("autoApprove", True)
+    app.settings.set("browserAutoApprove", True)
+    app.settings.set("nCtx", 16384)
+    m = app.store.find(MODEL) or app.store.find(Path(MODEL).name) or next(iter(app.store.local_models()), None)
+    assert m and app.load_model(m["path"], wait=True), (app.status, app.store.local_models())
+    print(f"=== {LABEL}: {app.status}", flush=True)
+    app.browser.ensure()          # fail fast if the browser can't start on this machine
+    print("browser ok:", app.browser.exe, flush=True)
+    score = 0
+    for name, task, check in TASKS:
+        STATE.update(basket=[], signup=None)
+        app.clear_chat()
+        t0 = time.time()
+        app.send(task)
         time.sleep(1)
-    answers = [m for m in app.messages if m["role"] == "assistant" and m["text"].strip()]
-    final = answers[-1]["text"] if answers else ""
-    did, said = check(final)
-    ok = did and said
-    score += ok
-    steps = len(answers)
-    print(f"\n##### {LABEL} {name}: {'PASS' if ok else 'FAIL'} (did it: {did}, answer right: {said}) "
-          f"{steps} replies, {time.time() - t0:.0f}s", flush=True)
-    for m in app.messages:
-        t = m["text"].replace("\n", " ⏎ ")
-        print(f"  [{m['role']}] {t[:400]}")
-print(f"\nSCORE {LABEL}: {score}/{len(TASKS)}", flush=True)
-Path("score.txt").write_text(f"{LABEL} {score}/{len(TASKS)}\n")
-app.engine.unload()
-app.browser.close()
+        while app.generating:
+            if time.time() - t0 > 900:
+                app.stop()
+            time.sleep(1)
+        answers = [m for m in app.messages if m["role"] == "assistant" and m["text"].strip()]
+        final = answers[-1]["text"] if answers else ""
+        did, said = check(final)
+        ok = did and said
+        score += ok
+        steps = len(answers)
+        print(f"\n##### {LABEL} {name}: {'PASS' if ok else 'FAIL'} (did it: {did}, answer right: {said}) "
+              f"{steps} replies, {time.time() - t0:.0f}s", flush=True)
+        for m in app.messages:
+            t = m["text"].replace("\n", " ⏎ ")
+            print(f"  [{m['role']}] {(m.get('stats') or '')} {t[:400]}")
+    print(f"\nSCORE {LABEL}: {score}/{len(TASKS)}", flush=True)
+    Path("score.txt").write_text(f"{LABEL} {score}/{len(TASKS)}\n")
+    app.engine.unload()
+    app.browser.close()
+
+
+if __name__ == "__main__":
+    main()

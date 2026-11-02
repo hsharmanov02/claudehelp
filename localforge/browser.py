@@ -127,6 +127,92 @@ INIT_SCRIPT = r"""
 """
 
 # Numbers the visible interactive elements and returns them with the page text.
+# Finds form fields by what they're called (label, placeholder, name, aria-label) so a model can fill a whole
+# form in one step without guessing element numbers. Ideas from Fantoma: let code do the fiddly steps.
+FORM_JS = r"""(pairs) => {
+  const vis = el => { const r = el.getBoundingClientRect(); const s = getComputedStyle(el);
+    return r.width > 1 && r.height > 1 && s.visibility !== 'hidden' && s.display !== 'none'; };
+  const norm = t => (t || '').toLowerCase().replace(/[^a-z0-9@. ]+/g, ' ').replace(/\s+/g, ' ').trim();
+  const fields = [...document.querySelectorAll('input:not([type=hidden]):not([type=submit]):not([type=button]):not([type=image]),textarea,select,[contenteditable=true]')].filter(vis);
+  const names = el => {
+    const out = [el.getAttribute('aria-label'), el.placeholder, el.name, el.id, el.title, el.getAttribute('autocomplete')];
+    if (el.id) document.querySelectorAll('label[for="' + CSS.escape(el.id) + '"]').forEach(l => out.push(l.innerText));
+    const wrap = el.closest('label'); if (wrap) out.push(wrap.innerText);
+    const by = el.getAttribute('aria-labelledby'); if (by) by.split(' ').forEach(i => { const e = document.getElementById(i); if (e) out.push(e.innerText); });
+    if (!wrap) { let p = el.previousElementSibling; if (p && p.innerText && p.innerText.length < 60) out.push(p.innerText);
+      const par = el.parentElement; if (par && par.innerText && par.innerText.length < 60) out.push(par.innerText); }
+    return norm(out.filter(Boolean).join(' | '));
+  };
+  const score = (el, key) => { const n = names(el), k = norm(key); if (!k) return 0;
+    if (n.split(' | ').some(x => x === k)) return 100;
+    const words = k.split(' ').filter(w => w.length > 1); const hit = words.filter(w => n.includes(w)).length;
+    let s = words.length ? 60 * hit / words.length : 0;
+    if (/mail/.test(k) && el.type === 'email') s += 40; if (/pass/.test(k) && el.type === 'password') s += 40;
+    if (/phone|tel/.test(k) && el.type === 'tel') s += 40; return s; };
+  const used = new Set(), done = [], missed = [];
+  const setVal = (el, v) => { const proto = el.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+    const set = Object.getOwnPropertyDescriptor(proto, 'value').set; el.focus(); set.call(el, v);
+    el.dispatchEvent(new Event('input', {bubbles: true})); el.dispatchEvent(new Event('change', {bubbles: true})); el.blur(); };
+  for (const [key, value] of pairs) {
+    let best = null, bs = 29;
+    for (const el of fields) { if (used.has(el)) continue; const sc = score(el, key); if (sc > bs) { bs = sc; best = el; } }
+    if (!best) { missed.push(key); continue; }
+    used.add(best);
+    const v = String(value), yes = /^(yes|y|true|on|1|tick|ticked|check|checked|accept|agree)$/i.test(v.trim());
+    if (best.tagName === 'SELECT') {
+      const want = norm(v); const o = [...best.options].find(o => norm(o.text) === want || norm(o.value) === want)
+        || [...best.options].find(o => norm(o.text).includes(want));
+      if (!o) { missed.push(key + ' (no option "' + v + '"; options: ' + [...best.options].map(o => o.text.trim()).slice(0, 15).join(', ') + ')'); continue; }
+      best.value = o.value; best.dispatchEvent(new Event('input', {bubbles: true})); best.dispatchEvent(new Event('change', {bubbles: true}));
+      done.push(key + ' = ' + o.text.trim());
+    } else if (best.type === 'checkbox' || best.type === 'radio') {
+      if (best.checked !== (best.type === 'radio' ? true : yes)) best.click();
+      done.push(key + (best.checked ? ' = ticked' : ' = not ticked'));
+    } else if (best.isContentEditable) { best.focus(); best.innerText = v; best.dispatchEvent(new Event('input', {bubbles: true})); done.push(key + ' filled');
+    } else { setVal(best, v); done.push(key + ' = ' + (best.type === 'password' ? '***' : v)); }
+    best.setAttribute('data-lf-filled', '1');
+  }
+  const left = fields.filter(f => !used.has(f)).map(f => names(f).split(' | ')[0]).filter(Boolean).slice(0, 12);
+  return JSON.stringify({done, missed, left});
+}"""
+
+# The element whose visible text best matches: for <click text="Add to basket"/> (no element numbers to get wrong).
+CLICK_TEXT_JS = r"""(want) => {
+  const vis = el => { const r = el.getBoundingClientRect(); const s = getComputedStyle(el);
+    return r.width > 2 && r.height > 2 && s.visibility !== 'hidden' && s.display !== 'none' && s.opacity !== '0'; };
+  const norm = t => (t || '').toLowerCase().replace(/\s+/g, ' ').trim();
+  const w = norm(want); let best = null, bs = 0;
+  const sel = 'button,a[href],input[type=submit],input[type=button],[role=button],[role=link],[role=tab],[role=menuitem],[role=option],summary,label,[onclick]';
+  for (const el of document.querySelectorAll(sel)) {
+    if (!vis(el)) continue;
+    const t = norm(el.getAttribute('aria-label') || el.innerText || el.value || el.title || '');
+    if (!t) continue;
+    let s = t === w ? 100 : t.startsWith(w) ? 80 : t.includes(w) ? 60 - Math.min(30, t.length / 10) : 0;
+    if (!s) { const ws = w.split(' ').filter(x => x.length > 2); const hit = ws.filter(x => t.includes(x)).length;
+      if (ws.length && hit === ws.length) s = 40; }
+    if (s && /^(button|input)$/i.test(el.tagName)) s += 5;
+    if (s > bs) { bs = s; best = el; }
+  }
+  if (!best) return null;
+  document.querySelectorAll('[data-lf-hit]').forEach(e => e.removeAttribute('data-lf-hit'));
+  best.setAttribute('data-lf-hit', '1');
+  return (best.innerText || best.value || best.getAttribute('aria-label') || '').replace(/\s+/g, ' ').trim().slice(0, 80) || best.tagName.toLowerCase();
+}"""
+
+# The site's own search box: input[type=search], or an input named/labelled search / q / query.
+SEARCH_BOX_JS = r"""(() => {
+  const vis = el => { const r = el.getBoundingClientRect(); return r.width > 2 && r.height > 2 && getComputedStyle(el).visibility !== 'hidden'; };
+  const all = [...document.querySelectorAll('input:not([type=hidden]),textarea')].filter(vis);
+  const s = el => { const t = ((el.type || '') + ' ' + (el.name || '') + ' ' + (el.id || '') + ' ' + (el.placeholder || '') + ' ' +
+      (el.getAttribute('aria-label') || '') + ' ' + (el.getAttribute('role') || '') + ' ' + ((el.form && el.form.action) || '')).toLowerCase();
+    return (el.type === 'search' ? 50 : 0) + (/search|find|look/.test(t) ? 30 : 0) + (/(^| )(q|query|k|keywords?|s)( |$)/.test(el.name || '') ? 25 : 0)
+      + (el.getAttribute('role') === 'combobox' ? 10 : 0) + (el.type === 'text' || !el.type ? 1 : -100); };
+  let best = null, bs = 0; for (const el of all) { const v = s(el); if (v > bs) { bs = v; best = el; } }
+  if (!best) return false;
+  document.querySelectorAll('[data-lf-hit]').forEach(e => e.removeAttribute('data-lf-hit'));
+  best.setAttribute('data-lf-hit', '1'); return true;
+})()"""
+
 SNAPSHOT_JS = r"""
 (() => {
   const vis = el => { const r = el.getBoundingClientRect(); const s = getComputedStyle(el);
@@ -720,6 +806,68 @@ class Browser:
         if not r:
             raise RuntimeError(f"Element [{n}] isn't on the page any more. Read the page again.")
         return r
+
+    def _click_hit(self):
+        r = self.eval("""(() => { const el = document.querySelector('[data-lf-hit]'); if (!el) return null;
+            el.scrollIntoView({block: 'center', inline: 'center'}); const old = el.style.outline;
+            el.style.outline = '3px solid #ff7a28'; setTimeout(() => { el.style.outline = old; }, 900);
+            const b = el.getBoundingClientRect(); return [b.left + b.width / 2, b.top + b.height / 2]; })()""")
+        if not r:
+            raise RuntimeError("That element disappeared. Read the page again.")
+        time.sleep(0.45)
+        self.click_xy(*r)
+        self.wait_loaded(8)
+
+    def click_text(self, text: str) -> str:
+        """Clicks the button/link whose visible text best matches. Returns what was clicked."""
+        self.ensure()
+        hit = self.eval(f"({CLICK_TEXT_JS})({json.dumps(text)})")
+        if not hit:
+            raise RuntimeError(f'No button or link with the text "{text}" on this page. Use <page find="..."/> or <page/>.')
+        self._click_hit()
+        return hit
+
+    def fill_form(self, pairs: list, submit=False) -> str:
+        """Fills fields by their names/labels in one go and optionally submits the form they're in."""
+        self.ensure()
+        r = json.loads(self.eval(f"({FORM_JS})({json.dumps(pairs)})") or "{}")
+        out = []
+        if r.get("done"):
+            out.append("Filled: " + "; ".join(r["done"]))
+        if r.get("missed"):
+            out.append("Couldn't find a field for: " + "; ".join(r["missed"]) +
+                       (". Fields on the page: " + ", ".join(r.get("left") or []) if r.get("left") else ""))
+        if submit and r.get("done"):
+            ok = self.eval("""(() => { const el = document.querySelector('[data-lf-filled]'); const f = el && el.form;
+                const b = f ? f.querySelector('button:not([type=button]):not([type=reset]),input[type=submit]') :
+                    [...document.querySelectorAll('button,input[type=submit]')].find(b => /submit|next|continue|sign|log|create|send|save|search|go|register|confirm/i.test(b.innerText || b.value));
+                document.querySelectorAll('[data-lf-hit]').forEach(e => e.removeAttribute('data-lf-hit'));
+                if (b) { b.setAttribute('data-lf-hit', '1'); return b.innerText || b.value || 'submit'; }
+                if (f) { f.requestSubmit ? f.requestSubmit() : f.submit(); return 'form'; } return null; })()""")
+            if ok and ok != "form":
+                self._click_hit()
+                out.append(f'Pressed "{ok.strip()[:40]}".')
+            elif ok:
+                self.wait_loaded(8)
+                out.append("Submitted the form.")
+            else:
+                out.append("No submit button found: click it yourself.")
+        self.eval("document.querySelectorAll('[data-lf-filled]').forEach(e => e.removeAttribute('data-lf-filled'))")
+        return " ".join(out) or "Nothing was filled."
+
+    def site_search(self, query: str) -> bool:
+        """Types into the site's own search box and presses Enter. False if the page has no search box."""
+        self.ensure()
+        if not self.eval(SEARCH_BOX_JS):
+            return False
+        x, y = self.eval("""(() => { const el = document.querySelector('[data-lf-hit]'); el.scrollIntoView({block: 'center'});
+            el.focus(); el.select && el.select(); const b = el.getBoundingClientRect(); return [b.left + b.width / 2, b.top + b.height / 2]; })()""")
+        self.click_xy(x, y)
+        self.send("Input.insertText", {"text": query})
+        time.sleep(0.3)
+        self.key("enter")
+        self.wait_loaded(10)
+        return True
 
     def click_element(self, n: int):
         x, y = self._center(n)

@@ -31,7 +31,7 @@ class Action:
     @property
     def browser_read(self) -> bool:
         """Browser actions that only look (run without asking)."""
-        return self.kind in ("search", "browse", "page", "scroll", "fetch", "extract", "back", "wait")
+        return self.kind in ("search", "browse", "page", "scroll", "fetch", "extract", "back", "wait", "sitesearch")
 
     @property
     def label(self) -> str:
@@ -44,8 +44,11 @@ class Action:
             "page": (f'Find "{self.path}" on the page' if self.path else "Read the browser page"),
             "back": "Go back to the previous page", "wait": f"Wait for {self.path or 'the page'}",
             "extract": "Extract tables and lists from the page" + (f' ("{self.path}")' if self.path else ""), "scroll": f"Scroll the page {self.path}",
-            "click": (f"Open row {self.path} of the extracted data" if self.extra == "row" else f"Click [{self.path}] in the browser"), "press": f"Press {self.path} in the browser",
+            "click": (f"Open row {self.path} of the extracted data" if self.extra == "row" else
+                      f'Click "{self.path}" in the browser' if self.extra == "text" else f"Click [{self.path}] in the browser"), "press": f"Press {self.path} in the browser",
             "type": f'Type "{self.content[:60]}" into [{self.path}]' + (" and submit" if self.extra == "submit" else ""),
+            "fill": f"Fill in {len(form_pairs(self.content))} form field(s)" + (" and submit" if self.extra == "submit" else ""),
+            "sitesearch": f'Search this site for "{self.path}"',
             "js": f"Run a script on the browser page ({len(self.content.splitlines())} lines)",
         }[self.kind]
 
@@ -53,7 +56,8 @@ class Action:
         return {"kind": self.kind, "path": self.path, "content": self.content, "extra": self.extra, "label": self.label}
 
 
-BROWSER_KINDS = ("search", "browse", "page", "scroll", "click", "type", "press", "js", "fetch", "extract", "back", "wait")
+BROWSER_KINDS = ("search", "browse", "page", "scroll", "click", "type", "press", "js", "fetch", "extract", "back", "wait",
+                 "fill", "sitesearch")
 
 
 THINK = re.compile(r"<think>[\s\S]*?(</think>|$)", re.I)
@@ -66,6 +70,9 @@ B_BROWSE = re.compile(r'<(?:browse|goto|navigate)\s+(?:url|href)\s*=\s*"([^"]+)"
 B_OPEN_URL = re.compile(r'<open\s+(?:url|href)\s*=\s*"([^"]+)"\s*/?>', re.I)
 B_FETCH = re.compile(r'<fetch\s+(?:url|href)\s*=\s*"([^"]+)"\s*/?>', re.I)
 B_PAGE = re.compile(r'<page(?:\s+(?:find|query|q)\s*=\s*"([^"]*)")?\s*/?>', re.I)
+B_CLICK_TEXT = re.compile(r'<click\s+(?:text|label|name)\s*=\s*"([^"]+)"\s*/?>', re.I)
+B_FILL = re.compile(r'<fill(\s+submit\s*=\s*"?(?:true|yes|1)"?)?\s*>([\s\S]*?)</fill>', re.I)
+B_SITESEARCH = re.compile(r'<sitesearch\s+(?:query|q|text)\s*=\s*"([^"]+)"\s*/?>', re.I)
 B_BACK = re.compile(r'<back\s*/?>', re.I)
 B_WAIT = re.compile(r'<wait(?:\s+(?:for|text|seconds|s)\s*=\s*"([^"]*)")?\s*/?>', re.I)
 NOTE = re.compile(r'<note>\s*([\s\S]*?)\s*</note>', re.I)
@@ -82,7 +89,7 @@ def strip_thinking(text: str) -> str:
     text = THINK.sub("", text).replace("</think>", "")
     return re.sub("[\u2063\u200b\u200c\u200d\u2060\ufeff]", "", text).strip()
 
-TAG_ANY = re.compile(r"<(write|run|type|js|note)\b[\s\S]*?(</\1>|$)|<[a-z]+\b[^>]*/?>", re.I)
+TAG_ANY = re.compile(r"<(write|run|type|js|note|fill)\b[\s\S]*?(</\1>|$)|<[a-z]+\b[^>]*/?>", re.I)
 
 
 def prose_of(reply: str) -> str:
@@ -138,6 +145,14 @@ YOU HAVE YOUR OWN WEB BROWSER (the user watches it live in the Browser tab and s
 <press key="Enter"/>                          press a key (Enter, Tab, Escape, PageDown, ArrowDown...)
 <scroll dir="down"/>                          scroll down (or up) and read what is visible
 <js>return document.querySelectorAll('tr').length</js>   run JavaScript on the page to read or change its data
+<click text="Add to basket"/>                 click the button/link with that text (easier than numbers)
+<fill submit="true">
+Full name: Alex Doe
+Email: alex@example.com
+Country: Canada
+I accept the terms: yes
+</fill>                                       fill a whole form by its field names in one step (dropdowns, tick boxes too); submit="true" presses its button
+<sitesearch query="blue kettle"/>             use the open site's own search box
 <page find="sign in"/>                        list the page's elements whose text matches (when the one you need isn't listed)
 <back/>                                       go back to the previous page
 <wait for="Results"/>                         wait until that text appears (pages that load slowly); <wait/> waits 2 seconds
@@ -186,6 +201,8 @@ Rules:
   result. After every click or typing, check the new page really shows what you expected before the next step.
   "Nothing on the page changed" means the step failed: try another way, never pretend it worked.
   Save every finding the user will need (names, prices, links, answers) with <note>...</note> as soon as you see it.
+  Prefer <fill> for forms, <sitesearch> on shops/sites and <click text="..."/> for buttons: they can't pick the wrong number.
+  Never write the final answer in the same reply as an action: you haven't seen the result yet.
   Stuck after two tries? Change approach: the site's own search box, a direct URL with the words in it
   (e.g. https://site/search?q=words), <page find="..."/>, <scroll/>, <js> to click by text, or <search> for another site.
   Keep going until every part of the task is done, then give the final answer from your notes and the pages.
@@ -231,6 +248,13 @@ def parse(raw: str) -> list[Action]:
         found.append((m.start(), Action("fetch", m.group(1).strip())))
     for m in B_PAGE.finditer(reply):
         found.append((m.start(), Action("page", (m.group(1) or "").strip())))
+    for m in B_CLICK_TEXT.finditer(reply):
+        found.append((m.start(), Action("click", m.group(1).strip(), extra="text")))
+    for m in B_FILL.finditer(reply):
+        if form_pairs(m.group(2)):
+            found.append((m.start(), Action("fill", "form", m.group(2).strip(), "submit" if m.group(1) else "")))
+    for m in B_SITESEARCH.finditer(reply):
+        found.append((m.start(), Action("sitesearch", m.group(1).strip())))
     for m in B_BACK.finditer(reply):
         found.append((m.start(), Action("back", "")))
     for m in B_WAIT.finditer(reply):
@@ -258,6 +282,16 @@ def parse(raw: str) -> list[Action]:
         # Repeated clicks/typing in one reply are real steps (e.g. type, Add, type, Add): keep them.
         if a.kind in ("click", "type", "press", "scroll", "js", "back", "wait") or a not in out:
             out.append(a)
+    return out
+
+
+def form_pairs(text: str) -> list[list[str]]:
+    """'Full name: Alex Doe' lines (or 'name = Alex') from a <fill> tag, as [field, value] pairs."""
+    out = []
+    for line in re.split(r"[\n;]+", text or ""):
+        m = re.match(r"\s*[-*]?\s*([^:=]{1,60}?)\s*[:=]\s*(.*?)\s*$", line)
+        if m and m.group(1).strip():
+            out.append([m.group(1).strip().strip('"'), m.group(2).strip().strip('"')])
     return out
 
 
@@ -435,6 +469,21 @@ def execute_browser(a: Action, browser) -> str:
                 " while ((n = w.nextNode())) { const r = n.parentElement && n.parentElement.getBoundingClientRect();"
                 " if (r && r.bottom > 0 && r.top < innerHeight && n.textContent.trim()) t.push(n.textContent.trim()); }"
                 " return t.join(' ').slice(0, 5000); })()")
+        if a.kind == "click" and a.extra == "text":
+            before = browser.signature()
+            hit = browser.click_text(a.path)
+            r = f'Clicked "{hit}". Now:\n' + browser.describe(4000)
+            return _unchanged(browser, before, f'clicking "{hit}"') + r + blocked_hint(r)
+        if a.kind == "fill":
+            before = browser.signature()
+            done = browser.fill_form(form_pairs(a.content), submit=(a.extra == "submit"))
+            warn = _unchanged(browser, before, "submitting") if a.extra == "submit" and "Couldn't" not in done else ""
+            return warn + done + "\nNow:\n" + browser.describe(4000)
+        if a.kind == "sitesearch":
+            if not browser.site_search(a.path):
+                return "This page has no search box. Open the site's home page first, or use <search query=\"site name words\"/>."
+            r = f'Searched this site for "{a.path}". Now:\n' + browser.describe(4000)
+            return r + blocked_hint(r)
         if a.kind == "click":
             link = browser.extract_link(int(a.path), row=(a.extra == "row"))
             if link:     # the model meant row N of the last <extract>, not page element N

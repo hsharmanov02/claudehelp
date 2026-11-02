@@ -239,7 +239,7 @@ function renderModels() {
 function stepLabel(k, attrs) {
   const v = ((attrs.match(/=\s*&quot;([\s\S]*?)&quot;/) || [])[1] || "").slice(0, 80);
   return ({ search: "🔎 Search: " + v, browse: "🌐 Open " + v, goto: "🌐 Open " + v, navigate: "🌐 Open " + v, fetch: "⬇ Fetch " + v,
-    page: v ? "🔍 Find on page: " + v : "📄 Read the page", back: "⬅ Back", wait: "⏳ Wait" + (v ? " for " + v : ""), extract: "📊 Extract data" + (v ? ": " + v : ""), click: /row\s*=/.test(attrs) ? "🖱 Open row " + v : "🖱 Click [" + v + "]", press: "⌨ Press " + v,
+    page: v ? "🔍 Find on page: " + v : "📄 Read the page", back: "⬅ Back", sitesearch: "🔎 Search this site: " + v, wait: "⏳ Wait" + (v ? " for " + v : ""), extract: "📊 Extract data" + (v ? ": " + v : ""), click: /row\s*=/.test(attrs) ? "🖱 Open row " + v : /text\s*=/.test(attrs) ? "🖱 Click “" + v + "”" : "🖱 Click [" + v + "]", press: "⌨ Press " + v,
     scroll: "↕ Scroll " + (v || "down"), find: "🔍 Find files: " + v, list: "📁 List " + v, read: "📄 Read " + v,
     mkdir: "📁 New folder " + v, delete: "🗑 Delete " + v, open: "↗ Open " + v })[k] || k;
 }
@@ -257,9 +257,9 @@ function md(src) {
       continue;
     }
     let h = esc(part)
-      .replace(/&lt;(write|run|type|js)[\s\S]*?(&lt;\/\1&gt;|$)/g, "")       // tool tags are shown as cards instead
+      .replace(/&lt;(write|run|type|js|fill)[\s\S]*?(&lt;\/\1&gt;|$)/g, "")       // tool tags are shown as cards instead
       .replace(/&lt;note&gt;([\s\S]*?)&lt;\/note&gt;/g, (m, t) => `<span class="pill step">📝 ${t.slice(0, 160)}</span>`)
-      .replace(/&lt;(find|list|read|mkdir|delete|open|search|browse|goto|navigate|fetch|page|extract|click|press|scroll|back|wait)(\s(?:[^&]|&quot;|&amp;|&#39;|&#x27;)*?)?\/?&gt;/g, (m, k, attrs) => `<span class="pill step">${stepLabel(k, attrs || "")}</span>`)
+      .replace(/&lt;(find|list|read|mkdir|delete|open|search|browse|goto|navigate|fetch|page|extract|click|press|scroll|back|wait|sitesearch)(\s(?:[^&]|&quot;|&amp;|&#39;|&#x27;)*?)?\/?&gt;/g, (m, k, attrs) => `<span class="pill step">${stepLabel(k, attrs || "")}</span>`)
       .replace(/`([^`\n]+)`/g, "<code>$1</code>")
       .replace(/\*\*([^*\n]+)\*\*/g, "<b>$1</b>")
       .replace(/(^|[^*])\*([^*\n]+)\*/g, "$1<i>$2</i>")

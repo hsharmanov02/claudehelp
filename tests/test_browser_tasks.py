@@ -86,3 +86,12 @@ def test_task_detection():
     assert is_task("go to amazon.co.uk and add the cheapest usb cable to my basket")
     assert is_task("open the website and fill in the contact form")
     assert not is_task("what is the capital of france")
+
+
+def test_fill_and_click_text_tags():
+    acts = tools.parse('<fill submit="true">\nFull name: Alex Doe\n- Email = a@b.com\nTerms: yes\n</fill><click text="Add to basket"/>'
+                       '<sitesearch query="blue kettle"/>')
+    assert [(a.kind, a.extra) for a in acts] == [("fill", "submit"), ("click", "text"), ("sitesearch", "")]
+    assert tools.form_pairs(acts[0].content) == [["Full name", "Alex Doe"], ["Email", "a@b.com"], ["Terms", "yes"]]
+    assert acts[2].browser_read and not acts[0].browser_read
+    assert tools.prose_of('<fill>\nA: b\n</fill> ok') == "ok"
