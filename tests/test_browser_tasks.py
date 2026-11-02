@@ -107,3 +107,22 @@ def test_cheapest_check_before_add_to_basket():
     assert app._unchecked_choice(tools.parse('<click n="2"/>')) is True
     assert "EVERY option" in app.messages[-1]["text"]
     assert app._unchecked_choice(tools.parse('<click n="2"/>')) is False     # only once
+
+
+def test_bank_sites_always_ask():
+    app = _app(FakeEngine([]))
+
+    class B:
+        url = "https://onlinebanking.nationwide.co.uk/AccountList"
+    app.browser = B()
+    assert app._on_bank()
+    B.url = "https://www.nationwide.co.uk/"
+    assert app._on_bank()
+    B.url = "https://shop.com/basket"
+    assert not app._on_bank()
+
+
+def test_network_tags():
+    acts = tools.parse('<network find="transactions"/><network body="12"/><netaudit/>')
+    assert [(a.kind, a.path, a.extra) for a in acts] == [("network", "transactions", ""), ("network", "12", "body"), ("netaudit", "", "")]
+    assert all(a.browser_read for a in acts)

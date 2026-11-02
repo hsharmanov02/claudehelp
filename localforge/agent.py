@@ -5,6 +5,7 @@ import platform
 import re
 import threading
 import time
+import urllib.parse
 from pathlib import Path
 
 from . import config, hardware, hf, runner, tools
@@ -18,7 +19,8 @@ FILE_WORDS = re.compile(
     r"photos?|pictures?|images?|screenshots?|videos?|music|songs?|audio|pdfs?|spreadsheets?|exe|zip|"
     r"on my (pc|computer|laptop)|in my \w+ folder)\b", re.I)
 WIN_PATH = re.compile(r"[A-Za-z]:\\[^\s\"'`<>|*?]*")
-WEB_WORDS = re.compile(r"\b(web|online|internet|browser|browse|website|site|google|url|http|https|www|news|weather|price|prices)\b", re.I)
+WEB_WORDS = re.compile(r"\b(web|online|internet|browser|browse|website|site|google|url|http|https|www|news|weather|price|prices|"
+                       r"bank|banking|nationwide|transactions?|statement)\b", re.I)
 DATA_WORDS = re.compile(r"\b(extract|scrape|table|list|top \d+|prices?|cheapest|compare|rank(ed|ing)?|csv|"
                         r"deals?|stories|results|data|population|market cap|sorted?|how many)\b", re.I)
 PRIVATE = re.compile(r"passw|passwd|creds?\b|credential|secret|token|api.?key|private.?key|seed.?phrase|wallet|\.env\b|\.pem\b|\.kdbx", re.I)
@@ -45,7 +47,7 @@ REFERS_BACK = re.compile(
 # A job to do on websites (not a quick lookup): gets more steps, a plan, saved notes and a progress block.
 TASK_WORDS = re.compile(r"\b(go to|open|log ?in|sign ?in|fill|form|click|book|order|buy|add to (cart|basket)|checkout|apply|"
                         r"register|subscribe|post|reply|send|download|navigate|find .{0,40} on|compare|every|each|all the|"
-                        r"step|then|and then|after that)\b", re.I)
+                        r"step|then|and then|after that|analy[sz]e|scan|check|audit|transactions?|spending|save money|saving)\b", re.I)
 URL_IN = re.compile(r"https?://|www\.|\b[\w-]+\.(com|org|net|io|co|uk|dev|ai|gov|edu)\b", re.I)
 NIX_PATH = re.compile(r"(?<![\w])/(?:home|Users|mnt|tmp|var|opt)/[^\s\"'`]+")
 
@@ -689,7 +691,8 @@ class App:
                     if a.kind not in ("scroll", "back", "wait"):     # going back again is a real step, not a repeat
                         self.done_lookups[key] = True
                     continue
-                if a.is_browser and not browser_auto and reply["actions"] and \
+                bank = self._on_bank()     # banking: clicks, typing and scripts always wait for the user's OK
+                if a.is_browser and (bank or not browser_auto) and reply["actions"] and \
                         reply["actions"][-1]["status"] == "pending" and reply["actions"][-1]["action"]["kind"] in ("batch",) + tools.BROWSER_KINDS:
                     # Several clicks/typing in one reply: one card for all of them, run in order.
                     self._add_to_batch(reply["actions"][-1], a)
@@ -698,7 +701,7 @@ class App:
                 pa = {"id": len(reply["actions"]), "action": a.to_dict(), "status": "pending", "result": None}
                 reply["actions"].append(pa)
                 self.touch()
-                if a.is_browser and browser_auto:
+                if a.is_browser and browser_auto and not bank:
                     self._set_status(a.label + "…")
                     pa["status"] = "done"
                     r = self._exec_browser(a)
@@ -925,6 +928,19 @@ class App:
         if a.kind in ("browse", "click", "type", "press", "fill", "sitesearch", "back"):
             self.moved = True
         return tools.execute_browser(a, self.browser)
+
+    BANK = re.compile(r"(^|\.)(nationwide\.co\.uk|barclays\.co\.uk|hsbc\.co\.uk|lloydsbank\.co(m|\.uk)|natwest\.com|"
+                      r"santander\.co\.uk|halifax-online\.co\.uk|halifax\.co\.uk|monzo\.com|starlingbank\.com|revolut\.com|"
+                      r"tsb\.co\.uk|metrobankonline\.co\.uk|firstdirect\.com|rbs\.co\.uk|chase\.(com|co\.uk)|paypal\.com|"
+                      r"wise\.com|coventrybuildingsociety\.co\.uk|virginmoney\.com)$|bank|banking", re.I)
+
+    def _on_bank(self) -> bool:
+        """The open page is online banking (Nationwide etc.): the AI may read, but never act there without asking."""
+        try:
+            host = (urllib.parse.urlparse(getattr(self.browser, "url", "") or "").hostname or "").lower()
+        except Exception:
+            return False
+        return bool(host) and bool(self.BANK.search(host))
 
     COMPARE = re.compile(r"\b(cheapest|lowest|highest|best|most|least|fastest|biggest|smallest|largest|newest|oldest|"
                          r"compare|top[- ]rated|better|lowest[- ]priced)\b", re.I)

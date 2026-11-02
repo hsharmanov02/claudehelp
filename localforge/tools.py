@@ -31,7 +31,7 @@ class Action:
     @property
     def browser_read(self) -> bool:
         """Browser actions that only look (run without asking)."""
-        return self.kind in ("search", "browse", "page", "scroll", "fetch", "extract", "back", "wait", "sitesearch")
+        return self.kind in ("search", "browse", "page", "scroll", "fetch", "extract", "back", "wait", "sitesearch", "network", "netaudit")
 
     @property
     def label(self) -> str:
@@ -49,6 +49,9 @@ class Action:
             "type": f'Type "{self.content[:60]}" into [{self.path}]' + (" and submit" if self.extra == "submit" else ""),
             "fill": f"Fill in {len(form_pairs(self.content))} form field(s)" + (" and submit" if self.extra == "submit" else ""),
             "sitesearch": f'Search this site for "{self.path}"',
+            "network": (f"Show the response of request {self.path}" if self.extra == "body" else
+                        "List the page's API requests" + (f' ("{self.path}")' if self.path else "")),
+            "netaudit": "Check the site's network traffic for security problems",
             "js": f"Run a script on the browser page ({len(self.content.splitlines())} lines)",
         }[self.kind]
 
@@ -57,7 +60,7 @@ class Action:
 
 
 BROWSER_KINDS = ("search", "browse", "page", "scroll", "click", "type", "press", "js", "fetch", "extract", "back", "wait",
-                 "fill", "sitesearch")
+                 "fill", "sitesearch", "network", "netaudit")
 
 
 THINK = re.compile(r"<think>[\s\S]*?(</think>|$)", re.I)
@@ -73,6 +76,8 @@ B_PAGE = re.compile(r'<page(?:\s+(?:find|query|q)\s*=\s*"([^"]*)")?\s*/?>', re.I
 B_CLICK_TEXT = re.compile(r'<click\s+(?:text|label|name)\s*=\s*"([^"]+)"\s*/?>', re.I)
 B_FILL = re.compile(r'<fill(\s+submit\s*=\s*"?(?:true|yes|1)"?)?\s*>([\s\S]*?)</fill>', re.I)
 B_SITESEARCH = re.compile(r'<sitesearch\s+(?:query|q|text)\s*=\s*"([^"]+)"\s*/?>', re.I)
+B_NETWORK = re.compile(r'<network(?:\s+(find|query|q|body|n)\s*=\s*"([^"]*)")?\s*/?>', re.I)
+B_NETAUDIT = re.compile(r'<(?:netaudit|net-audit|securitycheck)\s*/?>', re.I)
 B_BACK = re.compile(r'<back\s*/?>', re.I)
 B_WAIT = re.compile(r'<wait(?:\s+(?:for|text|seconds|s)\s*=\s*"([^"]*)")?\s*/?>', re.I)
 NOTE = re.compile(r'<note>\s*([\s\S]*?)\s*</note>', re.I)
@@ -153,6 +158,9 @@ Country: Canada
 I accept the terms: yes
 </fill>                                       fill a whole form by its field names in one step (dropdowns, tick boxes too); submit="true" presses its button
 <sitesearch query="blue kettle"/>             use the open site's own search box
+<network/>                                    list the API requests the page made (<network find="transactions"/> to filter)
+<network body="12"/>                          the data that API request 12 returned (JSON etc.)
+<netaudit/>                                   security check of every request the site made (servers, HTTPS, trackers, leaks)
 <page find="sign in"/>                        list the page's elements whose text matches (when the one you need isn't listed)
 <back/>                                       go back to the previous page
 <wait for="Results"/>                         wait until that text appears (pages that load slowly); <wait/> waits 2 seconds
@@ -209,6 +217,14 @@ Rules:
   (e.g. https://site/search?q=words), <page find="..."/>, <scroll/>, <js> to click by text, or <search> for another site.
   Keep going until every part of the task is done, then give the final answer from your notes and the pages.
 - Once your code runs and one test confirms it works, stop testing and tell the user the result.
+- BANKING / MONEY (e.g. Nationwide online banking): the user logs in THEMSELVES in the Browser tab. Never type
+  passwords, PINs or one-time codes, and never click anything that pays, transfers, adds payees or changes settings:
+  only read. If not logged in, ask the user to log in in the Browser tab and say "done".
+  Transactions: <extract/> the statement, or find the API with <network find="transaction"/> and read it with
+  <network body="N"/>. Save them to a CSV with <run lang="python">, then analyse in python: totals by month and
+  category, recurring payments and subscriptions, price rises, duplicate charges, fees, biggest spends, and concrete
+  ways to save. "Is my bank / account compromised?": run <netaudit/> and explain it plainly, without exaggerating.
+  It shows what the browser sent and received, not the bank's own servers.
 - Never accept cookies or sign up for anything unless the user asks.
 - If the user rejects one of your actions, don't ask for it again: answer with what you already have.
 - You remember this whole chat: the user's earlier messages and your replies are above. When the user refers to
@@ -257,6 +273,11 @@ def parse(raw: str) -> list[Action]:
             found.append((m.start(), Action("fill", "form", m.group(2).strip(), "submit" if m.group(1) else "")))
     for m in B_SITESEARCH.finditer(reply):
         found.append((m.start(), Action("sitesearch", m.group(1).strip())))
+    for m in B_NETWORK.finditer(reply):
+        body = (m.group(1) or "").lower() in ("body", "n")
+        found.append((m.start(), Action("network", (m.group(2) or "").strip(), extra="body" if body else "")))
+    for m in B_NETAUDIT.finditer(reply):
+        found.append((m.start(), Action("netaudit", "")))
     for m in B_BACK.finditer(reply):
         found.append((m.start(), Action("back", "")))
     for m in B_WAIT.finditer(reply):
@@ -450,6 +471,14 @@ def execute_browser(a: Action, browser) -> str:
         if a.kind == "page":
             r = browser.describe(find=a.path) if a.path else browser.describe()
             return r + blocked_hint(r)
+        if a.kind == "network":
+            browser.ensure()
+            if a.extra == "body":
+                return browser.network_body(int(re.sub(r"\D", "", a.path) or 0))
+            return browser.network(a.path)
+        if a.kind == "netaudit":
+            browser.ensure()
+            return browser.audit()
         if a.kind == "back":
             before = browser.signature()
             browser.history(-1)

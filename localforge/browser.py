@@ -353,6 +353,8 @@ class Browser:
         import collections
         self.console = collections.deque(maxlen=300)   # (seq, level, text) since the last page load
         self.console_seq = 0
+        self.net = collections.OrderedDict()    # requestId -> request record, newest last (for <network/> and <netaudit/>)
+        self.net_seq = 0
         self.sandbox_url = None      # set by the app: a blank page served by LocalForge for running code
         import atexit
         atexit.register(self.close)
@@ -449,6 +451,10 @@ class Browser:
         self.send("Runtime.enable")
         try:
             self.send("Log.enable")
+        except Exception:
+            pass
+        try:
+            self.send("Network.enable", {"maxTotalBufferSize": 20_000_000, "maxResourceBufferSize": 2_000_000})
         except Exception:
             pass
         self.send("Page.addScriptToEvaluateOnNewDocument", {"source": INIT_SCRIPT})
@@ -559,8 +565,164 @@ class Browser:
         elif method == "Page.frameStartedLoading":
             self.loading = True
             self.on_change()
+        elif method.startswith("Network."):
+            self._net_event(method, p)
         elif method == "Page.javascriptDialogOpening":
             threading.Thread(target=lambda: self.send("Page.handleJavaScriptDialog", {"accept": True}), daemon=True).start()
+
+    NET_KEEP = 800
+
+    def _net_event(self, method, p):
+        rid = p.get("requestId")
+        if not rid:
+            return
+        if method == "Network.requestWillBeSent":
+            r = p.get("request") or {}
+            if rid in self.net and p.get("redirectResponse"):      # a redirect: keep the old hop as its own entry
+                old = self.net.pop(rid)
+                old["status"] = (p["redirectResponse"] or {}).get("status")
+                self.net[f"{rid}-r{self.net_seq}"] = old
+            self.net_seq += 1
+            self.net[rid] = {"n": self.net_seq, "method": r.get("method", "GET"), "url": r.get("url", ""),
+                             "type": p.get("type", ""), "page": self.url, "post": bool(r.get("hasPostData") or r.get("postData")),
+                             "initiator": (p.get("initiator") or {}).get("type", ""), "status": None, "mime": "", "ip": "",
+                             "security": "", "tls": None, "size": 0, "failed": "", "time": time.time()}
+            while len(self.net) > self.NET_KEEP:
+                self.net.popitem(last=False)
+        elif method == "Network.responseReceived" and rid in self.net:
+            r = p.get("response") or {}
+            e = self.net[rid]
+            e.update(status=r.get("status"), mime=r.get("mimeType", ""), ip=r.get("remoteIPAddress", ""),
+                     security=r.get("securityState", ""))
+            d = r.get("securityDetails")
+            if d:
+                e["tls"] = {"protocol": d.get("protocol"), "issuer": d.get("issuer"), "subject": d.get("subjectName"),
+                            "validTo": d.get("validTo"), "ct": d.get("certificateTransparencyCompliance")}
+        elif method == "Network.loadingFinished" and rid in self.net:
+            self.net[rid]["size"] = int(p.get("encodedDataLength") or 0)
+        elif method == "Network.loadingFailed" and rid in self.net:
+            self.net[rid]["failed"] = (p.get("blockedReason") or p.get("errorText") or "failed")
+
+    def network(self, find: str = "", api_only=True, limit=60) -> str:
+        """The page's network requests: by default only API calls (fetch/XHR), newest last, numbered."""
+        rows = [(rid, e) for rid, e in self.net.items()
+                if (not api_only or e["type"] in ("XHR", "Fetch", "EventSource", "WebSocket") or "json" in e["mime"])
+                and (not find or find.lower() in e["url"].lower())]
+        if not rows:
+            return ("No API requests captured" + (f' matching "{find}"' if find else "") +
+                    " yet. They're recorded from when the browser started: reload the page (or click around) and ask again.")
+        rows = rows[-limit:]
+        out = [f"API requests the page made ({len(rows)} shown, newest last). See a response with <network body=\"N\"/>; "
+               "call one again (logged in as the user) with <fetch url=\"...\"/>:"]
+        for rid, e in rows:
+            u = e["url"] if len(e["url"]) <= 160 else e["url"][:160] + "…"
+            out.append(f"{e['n']}. {e['method']} {u} -> {e['failed'] or e['status'] or '…'} {e['mime']} {e['size']} bytes")
+        return "\n".join(out)
+
+    def network_body(self, n: int, max_chars=8000) -> str:
+        e = next(((rid, x) for rid, x in self.net.items() if x["n"] == int(n)), None)
+        if not e:
+            return f"No request {n} in the log. Use <network/> to see the numbers."
+        rid, x = e
+        try:
+            r = self.send("Network.getResponseBody", {"requestId": rid.split("-r")[0]}, timeout=15)
+        except Exception as ex:
+            return f"The body of request {n} isn't available any more ({ex}). Use <fetch url=\"{x['url']}\"/> instead."
+        body = r.get("body", "")
+        if r.get("base64Encoded"):
+            return f"Request {n} returned binary data ({x['mime']}, {x['size']} bytes)."
+        if len(body) > max_chars:
+            body = body[:max_chars] + f"\n…[cut, {len(body)} chars in all]"
+        return f"Response of {x['method']} {x['url'][:200]} ({x['status']} {x['mime']}):\n{body}"
+
+    TRACKERS = re.compile(r"google-analytics|googletagmanager|doubleclick|facebook\.(com|net)|fbcdn|hotjar|"
+                          r"clarity\.ms|bing\.com/(bat|action)|tiktok|snapchat|adservice|adnxs|criteo|quantserve|"
+                          r"scorecardresearch|segment\.(io|com)|mixpanel|amplitude|fullstory|mouseflow|contentsquare|"
+                          r"quantummetric|glassbox|decibel|dynatrace|newrelic|nr-data|datadog|adobedtm|omtrdc|demdex|"
+                          r"everesttech|tealium|optimizely|qualtrics|medallia|onetrust|cookielaw|trustarc|akamai|"
+                          r"incapsula|threatmetrix|online-metrix|iovation|biocatch|forter|sardine", re.I)
+    SENSITIVE = re.compile(r"[?&](token|access_token|auth|session|sid|password|pass|pin|otp|account|acct|sortcode|sort_code|"
+                           r"iban|card|cvv|ssn|dob|email|phone)=", re.I)
+
+    @staticmethod
+    def _site(host: str) -> str:
+        parts = host.lower().split(".")
+        if re.fullmatch(r"[\d.]+|\[?[0-9a-f:]+\]?", host or ""):
+            return host
+        if len(parts) >= 3 and parts[-2] in ("co", "com", "org", "gov", "ac", "net") and len(parts[-1]) == 2:
+            return ".".join(parts[-3:])
+        return ".".join(parts[-2:])
+
+    def audit(self) -> str:
+        """A security report of everything the open site's pages loaded or sent, worked out by code (not the model)."""
+        if not self.net:
+            return "No network traffic recorded yet. Open the site (and log in) in the Browser tab, click around, then ask again."
+        page_host = urllib.parse.urlparse(self.url).hostname or ""
+        home = self._site(page_host) if page_host else ""
+        hosts, insecure, failed, third_post, leaks, bad_tls, certs = {}, [], [], [], [], [], {}
+        traffic = [e for e in self.net.values()
+                   if not home or self._site(urllib.parse.urlparse(e["page"] or "").hostname or "") in (home, "")]
+        for e in traffic:
+            u = urllib.parse.urlparse(e["url"])
+            if u.scheme in ("data", "blob", "chrome-extension", "about", "file"):
+                continue
+            h = u.hostname or ""
+            first = bool(home) and self._site(h) == home
+            hs = hosts.setdefault(h, {"n": 0, "post": 0, "first": first, "tracker": bool(self.TRACKERS.search(h + u.path)),
+                                      "ips": set(), "types": set()})
+            hs["n"] += 1
+            hs["post"] += e["post"]
+            hs["types"].add(e["type"] or "?")
+            if e["ip"]:
+                hs["ips"].add(e["ip"])
+            if u.scheme in ("http", "ws") and h not in ("127.0.0.1", "localhost"):
+                insecure.append(f"{e['method']} {e['url'][:150]}")
+            if e["failed"] and e["failed"] not in ("net::ERR_ABORTED",):
+                failed.append(f"{e['url'][:120]} ({e['failed']})")
+            if not first and e["post"]:
+                third_post.append(f"{e['method']} {e['url'][:150]}")
+            if not first and self.SENSITIVE.search(e["url"]):
+                leaks.append(e["url"][:180])
+            if e["security"] in ("insecure", "insecure-broken") and u.scheme == "https":
+                bad_tls.append(e["url"][:150])
+            if e["tls"] and h not in certs:
+                certs[h] = e["tls"]
+        out = [f"Security check of the browser's traffic (worked out by LocalForge, {len(traffic)} requests while on this site; page: {self.url[:120]})",
+               "This shows what YOUR browser sent and received. It can't see inside the site's servers or database."]
+        if home:
+            mine = sorted(h for h, v in hosts.items() if v["first"])
+            out.append(f"\nThe site's own servers ({home}): " + ", ".join(f"{h} ({hosts[h]['n']})" for h in mine))
+        others = sorted((h for h, v in hosts.items() if not v["first"]), key=lambda h: -hosts[h]["n"])
+        if others:
+            out.append("Other companies' servers the page talked to:")
+            for h in others[:40]:
+                v = hosts[h]
+                tag = "tracker/analytics/fraud-check" if v["tracker"] else "unknown - check it"
+                out.append(f"  - {h}: {v['n']} requests, {v['post']} sending data ({tag})")
+        for h in sorted(certs)[:8]:
+            c = certs[h]
+            valid = ""
+            try:
+                valid = time.strftime("%Y-%m-%d", time.gmtime(float(c["validTo"])))
+            except Exception:
+                pass
+            out.append(f"Certificate {h}: {c.get('protocol')}, issued by {c.get('issuer')}, valid to {valid}"
+                       + ("" if c.get("ct") in (None, "compliant") else f", transparency: {c.get('ct')}"))
+        flags = []
+        if insecure:
+            flags.append("Unencrypted (http) requests:\n    " + "\n    ".join(insecure[:10]))
+        if bad_tls:
+            flags.append("HTTPS with a broken/insecure connection:\n    " + "\n    ".join(bad_tls[:10]))
+        if leaks:
+            flags.append("Possible personal data or tokens in links sent to other companies:\n    " + "\n    ".join(leaks[:10]))
+        unknown_post = [x for x in third_post if not self.TRACKERS.search(x)]
+        if unknown_post:
+            flags.append("Data sent to unrecognised outside servers:\n    " + "\n    ".join(unknown_post[:10]))
+        if failed:
+            flags.append(f"{len(failed)} failed/blocked requests (often ad-blocking or the network), e.g.:\n    " + "\n    ".join(failed[:5]))
+        out.append("\nRED FLAGS:\n  " + "\n  ".join(flags) if flags else
+                   "\nNo red flags: everything used HTTPS, and nothing personal was seen going to unknown servers.")
+        return "\n".join(out)
 
     def _log(self, level, text):
         self.console_seq += 1
