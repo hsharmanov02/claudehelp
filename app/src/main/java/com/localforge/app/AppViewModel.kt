@@ -725,7 +725,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     /** A short, normalised fingerprint of a reply, so near-identical replies (and A/B/A/B loops) match. */
     private fun fingerprint(text: String): String =
-        FileTools.stripThinking(text).lowercase().replace(Regex("[^a-z0-9<>/= ]"), "").replace(Regex("\s+"), " ").trim().take(160)
+        FileTools.stripThinking(text).lowercase().replace(Regex("[^a-z0-9<>/= ]"), "").replace(Regex("\\s+"), " ").trim().take(160)
 
     /** The reply with tool tags removed: what the user actually reads. */
     private fun proseOf(reply: String): String = FileTools.stripThinking(reply).replace(tagAny, "").trim()
