@@ -37,6 +37,11 @@ def _hide_private(listing: str) -> str:
     return "\n".join(lines)
 
 
+# The user is asking about an earlier message: "what was my last prompt", "what did I just ask"…
+REFERS_BACK = re.compile(
+    r"\b(previous|last|earlier|before|prior|first)\b.{0,30}\b(prompt|question|message|request|ask|asked|said|typed|wrote)|"
+    r"what (did|was) i (just )?(ask|say|said|tell|type|write|want)|"
+    r"\b(remind me what|you said|i said|i asked|i told you|i just asked)\b", re.I)
 NIX_PATH = re.compile(r"(?<![\w])/(?:home|Users|mnt|tmp|var|opt)/[^\s\"'`]+")
 
 
@@ -397,10 +402,12 @@ class App:
         tokens = s.get("nCtx") - reply_room - len(sys_prompt) / self.CHARS_PER_TOKEN - 300
         budget = int(max(600, tokens * self.CHARS_PER_TOKEN * shrink))
         picked, used, newest_result = [], 0, True
+        current = next((m for m in reversed(self.messages) if m["role"] == "user"), None)
+        recap = self._recap(current["text"]) if current else ""
         for m in reversed(self.messages):
             role = m["role"]
             if role == "user":
-                msg = {"role": "user", "content": m["modelText"] or m["text"]}
+                msg = {"role": "user", "content": (m["modelText"] or m["text"]) + (recap if m is current else "")}
             elif role == "assistant":
                 if not m["text"].strip():
                     continue
@@ -438,6 +445,32 @@ class App:
                 merged[-1] = {"role": "user", "content": merged[-1]["content"] +
                               f"\n\n[The user's question: {q}]\nIf the results above answer it, answer it now, fully and directly."}
         return [{"role": "system", "content": sys_prompt}] + merged
+
+    RECAP_MESSAGES = 8
+
+    def _recap(self, text: str) -> str:
+        """When the user refers back ("what did I just ask?"), a note naming their previous message.
+
+        Models given the whole chat still mix up the order: asked what came just before, they quote the
+        first message, or the one that held facts. The note makes it unmistakable. It's only added when the
+        user refers back, because on other turns extra text in front of small models sends them off course.
+        """
+        if not REFERS_BACK.search(text or ""):
+            return ""
+        users = [m for m in self.messages if m["role"] == "user"][:-1]
+        if not users:
+            return ""
+
+        def short(m):
+            t = re.sub(r"\s+", " ", m["text"]).strip()
+            return t if len(t) <= 200 else t[:200] + "…"
+        note = f'\n\n[Note from the app: my previous message, the one just before this one, was: "{short(users[-1])}"'
+        earlier = users[:-1][-(self.RECAP_MESSAGES - 1):]
+        if earlier:
+            first = len(users) - len(earlier)
+            note += ". My earlier messages, oldest first: " + " ".join(
+                f'{first + i}. "{short(m)}"' for i, m in enumerate(earlier))
+        return note + "]"
 
     def _chat(self, on_piece, reply):
         """Asks the model, shrinking the history and retrying if it doesn't fit in the context."""
