@@ -369,6 +369,16 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         stepsLeft = 10
         totalSteps = 0
         resetRequestState()
+        if (onPage && WebBrowser.hasPage) {
+            // Small models often skip reading the page or write broken tags: the app reads it first and hands it over.
+            viewModelScope.launch {
+                generating = true
+                val ctx = try { pageContext(text) } catch (e: Exception) { null } finally { generating = false; WebBrowser.step = null }
+                if (!ctx.isNullOrBlank()) messages += UiMessage(Role.TOOL, ctx)
+                runAgent()
+            }
+            return
+        }
         if (onPage || webWords.containsMatchIn(text) || !looksLikeFileRequest(text)) {
             runAgent()
             return
@@ -405,6 +415,23 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     private fun looksLikeFileRequest(text: String): Boolean =
         fileWords.containsMatchIn(text) || text.contains("/storage/") || Regex("\\.[a-z0-9]{2,5}\\b").containsMatchIn(text.lowercase())
+
+    /** The open page (text + numbered elements), plus its tables/lists when the question is about data. */
+    private suspend fun pageContext(question: String): String {
+        WebBrowser.step = "📖 Reading the page"
+        val wantsData = dataWords.containsMatchIn(question)
+        val parts = mutableListOf(WebBrowser.describe(if (wantsData) 1000 else 1600))
+        doneLookups += "page|||" + WebBrowser.url
+        if (wantsData) {
+            val ex = WebBrowser.extract(question.take(120))
+            if (!ex.startsWith("No tables")) {
+                parts += "Data on the page (tables and repeated lists as rows; ▲/▼ = up/down shown by colour). " +
+                    "To open a row's link use <click row=\"N\"/>:\n" + ex.take(2200)
+                doneLookups += "extract|||" + WebBrowser.url
+            }
+        }
+        return parts.joinToString("\n\n")
+    }
 
     /** Finds what the user is talking about: explicit paths, named folders, and index matches. */
     private suspend fun gatherFileContext(text: String): String {
@@ -820,6 +847,12 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                             val key = "${a.kind}|${a.path}|${a.content}" + if (a.kind in setOf("extract", "page", "scroll")) "|" + WebBrowser.url else ""
                             val site = siteFor(a)
                             when {
+                                a.kind in BrowserTools.PAGE_KINDS && !WebBrowser.hasPage -> {
+                                    repeats++
+                                    results += "No web page is open, so this wasn't done (${a.label}). Use <search query=\"...\"/> or " +
+                                        "<browse url=\"...\"/> first, or if the user is just chatting, simply answer them."
+                                    continueLoop = true
+                                }
                                 site.isNotEmpty() && site in blockedSites -> {
                                     repeats++
                                     results += "Skipped (${a.label}): $site blocks the browser. Don't use that site again. Use another result or answer with what you have."

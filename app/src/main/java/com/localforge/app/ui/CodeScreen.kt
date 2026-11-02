@@ -82,7 +82,7 @@ private val innerFence = Regex("```[\\w+#.-]*[ \\t]*\\r?\\n?|```")
 private val findTagDisplay = Regex("""<find\s+(?:query|name|q)\s*=\s*"([^"]+)"\s*/?>""", RegexOption.IGNORE_CASE)
 
 private val browserTagDisplay = Regex(
-    """<(search|browse|goto|navigate|fetch|page|extract|click|press|scroll)\b([^<>]*?)/?>|<type\s+(?:n|id|element)\s*=\s*"?(\d+)"?[^>]*>[\s\S]*?(</type>|$)|<js>[\s\S]*?(</js>|$)""",
+    """<(search|browse|goto|navigate|fetch|page|extract|click|press|scroll|network|requests|api)\b([^<>]*?)/?>|<type\s+(?:n|id|element)\s*=\s*"?(\d+)"?[^>]*>[\s\S]*?(</type>|$)|<js>[\s\S]*?(</js>|$)""",
     RegexOption.IGNORE_CASE
 )
 private val attr = Regex("""(\w+)\s*=\s*"?([^"]*)"?""")

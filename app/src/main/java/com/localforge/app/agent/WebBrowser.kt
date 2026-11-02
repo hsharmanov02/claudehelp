@@ -116,6 +116,8 @@ object WebBrowser {
     @SuppressLint("SetJavaScriptEnabled")
     fun view(): WebView = wv ?: WebView(ctx).also { w ->
         wv = w
+        // White until the page paints, instead of a black box.
+        w.setBackgroundColor(android.graphics.Color.WHITE)
         val s = w.settings
         s.javaScriptEnabled = true
         s.domStorageEnabled = true
@@ -197,6 +199,13 @@ object WebBrowser {
             canGoBack = view.canGoBack()
             if (!WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) {
                 view.evaluateJavascript(script("init"), null)
+            }
+        }
+
+        override fun onReceivedError(view: WebView, request: WebResourceRequest, error: android.webkit.WebResourceError) {
+            if (request.isForMainFrame) {
+                loading = false
+                notice = "Couldn't load the page: ${error.description}"
             }
         }
 
@@ -376,10 +385,12 @@ object WebBrowser {
         val cuesArr = d.optJSONArray("cues") ?: JSONArray()
         val cues = (0 until cuesArr.length()).joinToString("\n") { cuesArr.getString(it) }.take(1000)
         val problems = if (withConsole) consoleText(onlyProblems = true, limit = 10) else ""
+        val apiCalls = try { (eval("(window.__lfNet || []).filter(x => x.body).length", 3_000) as? Number)?.toInt() ?: 0 } catch (_: Exception) { 0 }
         return "Browser page: ${d.optString("title")}\nURL: ${d.optString("url")}\n\nPage text:\n${text.ifBlank { "(empty)" }}\n\n" +
             (if (cues.isNotBlank()) "Visual cues (meaning shown by colour/style, not in the text):\n$cues\n\n" else "") +
             "Clickable / fillable elements (use their numbers):\n${list.ifBlank { "(none)" }}" +
-            (if (problems.isNotBlank()) "\n\nConsole errors/warnings on this page:\n$problems" else "")
+            (if (problems.isNotBlank()) "\n\nConsole errors/warnings on this page:\n$problems" else "") +
+            (if (apiCalls > 0) "\n\nThis page loaded data from $apiCalls backend API call(s). Use <network/> to see them." else "")
     }
 
     /** Pulls tables and repeated lists (results, products, stories) off the page as rows with links. */
@@ -400,6 +411,18 @@ object WebBrowser {
         if (row) return extractRows[n]
         val exists = try { eval("!!document.querySelector('[data-lf-id=\"$n\"]')") == true } catch (_: Exception) { false }
         return if (exists) null else extractRows[n]
+    }
+
+    /** The page's own calls to its backend (fetch/XHR) with the start of each response. */
+    suspend fun network(): String {
+        val arr = eval("window.__lfNet || []") as? JSONArray ?: JSONArray()
+        if (arr.length() == 0) return "This page hasn't made any backend API calls that LocalForge saw. Read it with <page/> or <extract/>."
+        val rows = (0 until arr.length()).map { arr.getJSONObject(it) }.sortedByDescending { it.optString("body").length }.take(12)
+        return "Backend API calls this page made (most data first; open one with <fetch url=\"...\"/> for the full response):\n" +
+            rows.joinToString("\n\n") { o ->
+                "${o.optString("method")} ${o.optString("url")} -> ${o.optInt("status")} ${o.optString("type")}" +
+                    (o.optString("body").takeIf { it.isNotBlank() }?.let { "\n" + it.take(700) } ?: "")
+            }.take(5000)
     }
 
     // ---------- acting on pages ----------

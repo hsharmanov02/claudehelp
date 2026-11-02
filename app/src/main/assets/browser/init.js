@@ -10,6 +10,34 @@
     }, true);
   } catch (e) {}
 
+  // Remember the page's own calls to its backend (fetch/XHR), so the AI can read the API data directly.
+  try {
+    const net = window.__lfNet = [];
+    const keep = (method, url, status, type, body) => {
+      if (net.length >= 40) net.shift();
+      net.push({ method, url: String(url).slice(0, 300), status, type: (type || '').split(';')[0],
+                 body: /json|text|csv|xml/.test(type || '') ? String(body || '').slice(0, 1500) : '' });
+    };
+    const of = window.fetch;
+    if (of) window.fetch = function (input, init) {
+      const url = (input && input.url) || input, method = (init && init.method) || (input && input.method) || 'GET';
+      return of.apply(this, arguments).then(r => {
+        try { const t = r.headers.get('content-type') || '';
+          if (/json|text|csv|xml/.test(t)) r.clone().text().then(b => keep(method, new URL(url, location.href).href, r.status, t, b)).catch(() => {});
+          else keep(method, new URL(url, location.href).href, r.status, t, ''); } catch (e) {}
+        return r;
+      });
+    };
+    const xo = XMLHttpRequest.prototype.open, xs = XMLHttpRequest.prototype.send;
+    XMLHttpRequest.prototype.open = function (m, u) { this.__lf = [m, u]; return xo.apply(this, arguments); };
+    XMLHttpRequest.prototype.send = function () {
+      this.addEventListener('loadend', () => { try { const t = this.getResponseHeader('content-type') || '';
+        keep(this.__lf[0], new URL(this.__lf[1], location.href).href, this.status, t,
+             (this.responseType === '' || this.responseType === 'text') ? this.responseText : ''); } catch (e) {} });
+      return xs.apply(this, arguments);
+    };
+  } catch (e) {}
+
   // Dropdowns, date, time and colour fields: LocalForge shows its own picker (the phone's built-in one
   // often doesn't open inside an app's browser). The AI's own clicks set window.__lfAi and are left alone.
   const PICK = ['date', 'time', 'datetime-local', 'month', 'week', 'color'];

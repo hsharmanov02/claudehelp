@@ -2,9 +2,11 @@ package com.localforge.app.agent
 
 /** Browser tags the model can write: <search>, <browse>, <fetch>, <page>, <extract>, <scroll>, <click>, <type>, <press>, <js>. */
 object BrowserTools {
-    val KINDS = setOf("search", "browse", "page", "scroll", "click", "type", "press", "js", "fetch", "extract")
+    val KINDS = setOf("search", "browse", "page", "scroll", "click", "type", "press", "js", "fetch", "extract", "network")
     /** These only read (or open) pages, so they run without asking. */
-    val READ_KINDS = setOf("search", "browse", "page", "scroll", "fetch", "extract")
+    val READ_KINDS = setOf("search", "browse", "page", "scroll", "fetch", "extract", "network")
+    /** Steps that need a page to be open already. */
+    val PAGE_KINDS = setOf("page", "scroll", "click", "type", "press", "js", "extract", "network")
 
     private val opt = setOf(RegexOption.IGNORE_CASE)
     private val bSearch = Regex("""<search\s+(?:query|q)\s*=\s*"([^"]+)"\s*/?>""", opt)
@@ -12,6 +14,7 @@ object BrowserTools {
     private val bOpenUrl = Regex("""<open\s+(?:url|href|path)\s*=\s*"(https?://[^"]+|[^"]+\.html?)"\s*/?>""", opt)
     private val bFetch = Regex("""<fetch\s+(?:url|href)\s*=\s*"([^"]+)"\s*/?>""", opt)
     private val bPage = Regex("""<page\s*/?>""", opt)
+    private val bNetwork = Regex("""<(?:network|requests|api)\s*/?>""", opt)
     private val bExtract = Regex("""<extract(?:\s+(?:query|q|what|about)\s*=\s*"([^"]*)")?\s*/?>""", opt)
     private val bScroll = Regex("""<scroll(?:\s+(?:dir|direction)\s*=\s*"([^"]*)")?\s*/?>""", opt)
     private val bClick = Regex("""<click\s+(n|id|element|row)\s*=\s*"?(\d+)"?\s*/?>""", opt)
@@ -36,13 +39,18 @@ YOU HAVE YOUR OWN WEB BROWSER (the user watches it live in the Browser tab and s
 <type n="5">text</type>        fill input [5]; add submit="true" to press Enter after
 <press key="Enter"/>           press a key (Enter, Tab, Escape, PageDown, ArrowDown)
 <scroll dir="down"/>           scroll down (or up) and read what is visible
-<js>document.title</js>        run JavaScript on the page; the last expression is the result
+<network/>                     the page's own backend API calls (the JSON data the site loaded)
+<js>document.title</js>        run JavaScript on the page; the last expression is the result.
+                               To change the page (text, values, styles) use <js>, e.g. document.querySelector("h1").textContent = "New"
 Browser rules:
 - For news, prices, deals, shops, weather or anything current, start with <search>, then <browse> one of the result links.
 - Never make up or guess a web address. Only <browse> addresses the user gave you or that appeared in a result.
 - If a site blocks you or shows an error, don't retry it: open another result or answer from the snippets.
 - After a browser tag, stop your reply and wait for the result. Use element numbers from the latest page only.
 - If the user asks to open, click or go to something, do that FIRST and answer from the new page.
+- If the page is already given to you under [Page data], answer from it. Only use a tag if you need more.
+- For data a site loads from its server (prices, feeds, dashboards), <network/> often has it as clean JSON.
+- If the user is just chatting, answer normally without browser tags.
 - Copy numbers, prices and links exactly from the page results. Never invent them.
 - Never accept cookies or sign up for anything unless the user asks.
 """.trim()
@@ -58,6 +66,7 @@ Browser rules:
         bOpenUrl.findAll(reply).forEach { add(it, "browse", it.groupValues[1].trim()) }
         bFetch.findAll(reply).forEach { add(it, "fetch", it.groupValues[1].trim()) }
         bPage.findAll(reply).forEach { add(it, "page", "") }
+        bNetwork.findAll(reply).forEach { add(it, "network", "") }
         bExtract.findAll(reply).forEach { add(it, "extract", it.groupValues[1].trim()) }
         bScroll.findAll(reply).forEach { add(it, "scroll", it.groupValues[1].ifBlank { "down" }.trim().lowercase()) }
         bClick.findAll(reply).forEach { add(it, "click", it.groupValues[2], extra = if (it.groupValues[1].lowercase() == "row") "row" else "") }
@@ -83,6 +92,7 @@ Browser rules:
         "type" -> "⌨ Type into [$path]"
         "press" -> "⌨ Press $path"
         "js" -> "🧩 Run a page script"
+        "network" -> "📡 Read the page's API data"
         else -> kind
     }
 
@@ -124,6 +134,7 @@ Browser rules:
                 "To open a row's main link use <click row=\"N\"/> (N = the row's number here, NOT a page element number). " +
                 "For another link in a row (e.g. its comments), use <browse url=\"that link\"/>:\n" + b.extract(a.path)
             "page" -> { val r = b.describe(); r + blockedHint(r) }
+            "network" -> b.network()
             "fetch" -> { val r = b.fetchRaw(a.path); r + blockedHint(r) }
             "scroll" -> "Scrolled. Visible part of the page:\n" + b.scroll(a.path.startsWith("up"))
             "click" -> {

@@ -216,6 +216,8 @@ fun BrowserScreen(vm: AppViewModel) {
 @Composable
 private fun WebViewHost() {
     val gen = WebBrowser.generation
+    val url = WebBrowser.url
+    val loading = WebBrowser.loading
     androidx.compose.runtime.key(gen) {
         AndroidView(
             modifier = Modifier.fillMaxSize(),
@@ -223,7 +225,14 @@ private fun WebViewHost() {
                 val w = WebBrowser.view()
                 (w.parent as? ViewGroup)?.removeView(w)
                 w.layoutParams = ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
+                w.onResume()
+                w.resumeTimers()
+                // A WebView moved back onto the screen can keep showing a black frame until it's asked to redraw.
+                w.post { w.requestLayout(); w.invalidate() }
                 w
+            },
+            update = { w ->
+                if (url.isNotEmpty() || !loading) w.postInvalidate()
             },
             onRelease = { w -> (w.parent as? ViewGroup)?.removeView(w) }
         )

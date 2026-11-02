@@ -50,6 +50,7 @@ sealed class FileAction {
             "type" -> "Type \"${content.take(60)}\" into [$path]" + if (extra == "submit") " and press Enter" else ""
             "press" -> "Press $path on the page"
             "js" -> "Run a script on the page (${content.lines().size} lines)"
+            "network" -> "Read the page's backend API calls"
             else -> kind
         }
     }
