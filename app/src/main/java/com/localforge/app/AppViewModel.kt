@@ -93,9 +93,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     var browserAutoApprove by mutableStateOf(prefs.getBoolean("browserAutoApprove", false))
         private set
     /** Lets thinking models reason before answering. Off by default: on a phone it can take many minutes. */
-    var thinkHarder by mutableStateOf(prefs.getBoolean("thinkHarder", false))
+    var thinkHarder by mutableStateOf(prefs.getBoolean("thinkHarder2", true))
         private set
-    fun updateThinkHarder(v: Boolean) { thinkHarder = v; prefs.edit().putBoolean("thinkHarder", v).apply() }
+    fun updateThinkHarder(v: Boolean) { thinkHarder = v; prefs.edit().putBoolean("thinkHarder2", v).apply() }
 
     /** Live progress of the current request, shown while the AI works ("Step 2 · 1:05"). */
     var requestStartedAt by mutableStateOf(0L)
@@ -105,6 +105,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     /** Longest one reply may take, and how long a whole request may keep using tools, before the app steps in. */
     private val replyLimitMs get() = if (thinkHarder) 8 * 60_000L else 4 * 60_000L
     private val requestLimitMs get() = if (thinkHarder) 20 * 60_000L else 10 * 60_000L
+    /** Thinking budget: after this much hidden thinking the model must stop thinking and act. */
+    private val thinkTokenBudget = 700
+    private val thinkTimeBudgetMs = 3 * 60_000L
     private var timeNudged = false
     /** "Ask AI about this page": the chat as a sheet over the live page in the Browser tab. */
     var pagePanelOpen by mutableStateOf(false)
@@ -803,15 +806,35 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                     val reply = UiMessage(Role.ASSISTANT, "")
                     messages += reply
                     var cutShort = false
+                    var thinkCut = false
+                    val replyStart = System.currentTimeMillis()
                     val watchdog = launch {
                         delay(replyLimitMs)
                         cutShort = true
                         Engine.stop()
                     }
-                    val full = try {
-                        Engine.chat(history(), maxTokens, temperature, noThink = !thinkHarder) { piece ->
+                    val sb = StringBuilder()
+                    var pieces = 0
+                    var full = try {
+                        val hist = history()
+                        val first = Engine.chat(hist, maxTokens, temperature, noThink = !thinkHarder) { piece ->
+                            sb.append(piece)
+                            pieces++
                             main.post { reply.text += piece }
+                            // Thinking that goes round in circles: cut it off and make the model act on what it has.
+                            if (thinkHarder && !thinkCut && sb.contains("<think>") && !sb.contains("</think>") &&
+                                (pieces > thinkTokenBudget || System.currentTimeMillis() - replyStart > thinkTimeBudgetMs)) {
+                                thinkCut = true
+                                Engine.stop()
+                            }
                         }
+                        if (thinkCut && !cutShort && !stopRequested) {
+                            val prefill = first.trimEnd() + "\n\nI've thought enough. Now I act: the next step, as a tool tag, or my answer.\n</think>\n\n"
+                            main.post { reply.text = prefill }
+                            prefill + Engine.chat(hist, maxTokens, temperature, prefill = prefill) { piece ->
+                                main.post { reply.text += piece }
+                            }
+                        } else first
                     } finally {
                         watchdog.cancel()
                     }
@@ -921,6 +944,20 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                                     }
                                     results += r
                                     if (a.kind != "scroll") doneLookups += key
+                                    continueLoop = true
+                                }
+                                a.kind == "js" || a.kind == "mod" -> {
+                                    // Code for the page runs straight on the live page, like code the AI runs on the phone.
+                                    val p = PendingAction(a)
+                                    p.status = ActionStatus.DONE
+                                    reply.actions += p
+                                    showBrowser()
+                                    var r = browserStep(a)
+                                    r += extractIfEmpty(a, r)
+                                    pageChanged()
+                                    noteResult(a, r)
+                                    p.result = short(r)
+                                    results += r
                                     continueLoop = true
                                 }
                                 browserAuto -> {

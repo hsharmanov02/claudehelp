@@ -82,7 +82,7 @@ private val innerFence = Regex("```[\\w+#.-]*[ \\t]*\\r?\\n?|```")
 private val findTagDisplay = Regex("""<find\s+(?:query|name|q)\s*=\s*"([^"]+)"\s*/?>""", RegexOption.IGNORE_CASE)
 
 private val browserTagDisplay = Regex(
-    """<(search|browse|goto|navigate|fetch|page|extract|click|press|scroll|network|requests|api)\b([^<>]*?)/?>|<type\s+(?:n|id|element)\s*=\s*"?(\d+)"?[^>]*>[\s\S]*?(</type>|$)|<js>[\s\S]*?(</js>|$)""",
+    """<(search|browse|goto|navigate|fetch|page|extract|click|press|scroll|network|requests|api)\b([^<>]*?)/?>|<type\s+(?:n|id|element)\s*=\s*"?(\d+)"?[^>]*>[\s\S]*?(</type>|$)|<js>[\s\S]*?(</js>|$)|<mod\b[^>]*>[\s\S]*?(</mod>|$)""",
     RegexOption.IGNORE_CASE
 )
 private val attr = Regex("""(\w+)\s*=\s*"?([^"]*)"?""")
@@ -91,6 +91,7 @@ private val attr = Regex("""(\w+)\s*=\s*"?([^"]*)"?""")
 private fun browserChip(m: MatchResult): String {
     val whole = m.value
     if (whole.startsWith("<js", true)) return "\n" + BrowserTools.chip("js", "") + "\n"
+    if (whole.startsWith("<mod", true)) return "\n" + BrowserTools.chip("mod", Regex("site\\s*=\\s*\"([^\"]*)\"").find(whole)?.groupValues?.get(1) ?: "this site") + "\n"
     if (m.groupValues[3].isNotEmpty()) return "\n" + BrowserTools.chip("type", m.groupValues[3]) + "\n"
     var kind = m.groupValues[1].lowercase()
     if (kind == "goto" || kind == "navigate") kind = "browse"
@@ -389,7 +390,7 @@ private fun ActionCard(vm: AppViewModel, p: PendingAction) {
         if (act is FileAction.Batch) {
             act.steps.forEachIndexed { i, st -> Text("${i + 1}. ${st.label}", color = C.Text, fontFamily = FontFamily.Monospace, fontSize = 13.sp) }
         } else Text(act.label, color = C.Text, fontFamily = FontFamily.Monospace, fontSize = 13.sp)
-        if (act is FileAction.Browser && act.kind == "js") {
+        if (act is FileAction.Browser && (act.kind == "js" || act.kind == "mod")) {
             Text(act.content.take(400), color = C.Muted, fontFamily = FontFamily.Monospace, fontSize = 11.sp, maxLines = 8, modifier = Modifier.padding(top = 6.dp))
         }
         val w = p.action

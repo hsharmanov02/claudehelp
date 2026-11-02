@@ -40,6 +40,9 @@ import java.net.URLEncoder
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 
+/** A saved change to a site, re-applied on every load. */
+data class ModEntry(val site: String, val index: Int, val note: String, val js: String)
+
 /** A dropdown or date/time/colour field the user tapped: LocalForge draws the picker itself. */
 class PickRequest(val json: JSONObject) {
     val kind: String get() = json.optString("kind")
@@ -200,6 +203,7 @@ object WebBrowser {
             if (!WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) {
                 view.evaluateJavascript(script("init"), null)
             }
+            applyMods(view, url)
         }
 
         override fun onReceivedError(view: WebView, request: WebResourceRequest, error: android.webkit.WebResourceError) {
@@ -597,6 +601,55 @@ object WebBrowser {
             el.focus(); set.call(el, ${JSONObject.quote(value)});
             el.dispatchEvent(new Event('input', {bubbles: true})); el.dispatchEvent(new Event('change', {bubbles: true})); return true; })()""")
         if (ok != true) notice = "That field isn't on the page any more."
+    }
+
+    // ---------- saved site edits ----------
+    // Changes the AI made to a site that the user wanted to keep: re-applied every time that site loads.
+
+    private val modPrefs by lazy { appCtx.getSharedPreferences("sitemods", Context.MODE_PRIVATE) }
+    /** Bumped when edits change, so the screen's count updates. */
+    var modsVersion by mutableStateOf(0)
+        private set
+
+    fun siteOf(u: String): String = try { (Uri.parse(u).host ?: "").removePrefix("www.").lowercase() } catch (_: Exception) { "" }
+
+    private fun allMods(): JSONObject = try { JSONObject(modPrefs.getString("mods", "{}") ?: "{}") } catch (_: Exception) { JSONObject() }
+
+    /** Saved edits that apply to this address: (site, index, note, code). */
+    fun modsFor(u: String): List<ModEntry> {
+        val host = siteOf(u)
+        if (host.isEmpty()) return emptyList()
+        val all = allMods()
+        return all.keys().asSequence().filter { host == it || host.endsWith(".$it") }.flatMap { site ->
+            val arr = all.getJSONArray(site)
+            (0 until arr.length()).map { i -> ModEntry(site, i, arr.getJSONObject(i).optString("note"), arr.getJSONObject(i).optString("js")) }
+        }.toList()
+    }
+
+    fun saveMod(site: String, js: String, note: String) {
+        val key = siteOf(if (site.contains("://")) site else "https://$site").ifEmpty { site.lowercase() }
+        val all = allMods()
+        val arr = all.optJSONArray(key) ?: JSONArray()
+        arr.put(JSONObject().put("js", js).put("note", note))
+        all.put(key, arr)
+        modPrefs.edit().putString("mods", all.toString()).apply()
+        modsVersion++
+    }
+
+    fun removeMod(m: ModEntry) {
+        val all = allMods()
+        val arr = all.optJSONArray(m.site) ?: return
+        val left = JSONArray()
+        for (i in 0 until arr.length()) if (i != m.index) left.put(arr.get(i))
+        if (left.length() == 0) all.remove(m.site) else all.put(m.site, left)
+        modPrefs.edit().putString("mods", all.toString()).apply()
+        modsVersion++
+    }
+
+    private fun applyMods(view: WebView, u: String) {
+        for (m in modsFor(u)) {
+            view.evaluateJavascript("(async () => { try {\n${m.js}\n} catch (e) { console.error('LocalForge saved edit failed: ' + e); } })()", null)
+        }
     }
 
     fun saveCookies() {

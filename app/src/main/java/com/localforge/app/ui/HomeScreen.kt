@@ -236,8 +236,8 @@ private fun RuntimeSettings(vm: AppViewModel) {
         Spacer(Modifier.height(10.dp))
         Row(verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
-                Text("Think harder", color = C.Text, fontWeight = FontWeight.SemiBold)
-                Text("Lets thinking models (like Qwen3) reason before answering. Smarter, but on a phone it can take many minutes per reply.", color = C.Muted, fontSize = 13.sp)
+                Text("Let the AI think first", color = C.Text, fontWeight = FontWeight.SemiBold)
+                Text("Thinking models (like Qwen3) reason before acting. Smarter but slower. If it thinks too long, it's made to act on what it has.", color = C.Muted, fontSize = 13.sp)
             }
             Switch(checked = vm.thinkHarder, onCheckedChange = { vm.updateThinkHarder(it) })
         }

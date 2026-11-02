@@ -51,6 +51,7 @@ sealed class FileAction {
             "press" -> "Press $path on the page"
             "js" -> "Run a script on the page (${content.lines().size} lines)"
             "network" -> "Read the page's backend API calls"
+            "mod" -> "Save a lasting edit to $path: ${extra.ifBlank { "${content.lines().size} lines of code" }}"
             else -> kind
         }
     }

@@ -108,6 +108,7 @@ object Engine {
         maxTokens: Int,
         temperature: Float,
         noThink: Boolean = false,
+        prefill: String = "",
         onText: (String) -> Unit
     ): String = withContext(dispatcher) {
         val h = handle
@@ -122,6 +123,8 @@ object Engine {
         // off, the reply starts after an empty think block, the same as their own "enable_thinking=false".
         val text = String(formatted, Charsets.UTF_8)
         if (noThink && text.endsWith("<|im_start|>assistant\n")) prompt = utf8(text + "<think>\n\n</think>\n\n")
+        // The start of the reply is already written (e.g. its thinking, closed off): the model carries on from there.
+        if (prefill.isNotEmpty()) prompt = utf8(String(prompt, Charsets.UTF_8) + prefill)
         val out = StringBuilder()
         var pieces = 0
         var firstAt = 0L
