@@ -1,0 +1,21 @@
+name: Memory diagnostic
+on: push
+jobs:
+  diag:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: pip install -r requirements.txt || true
+      - name: llama.cpp
+        env: { GH_TOKEN: "${{ github.token }}" }
+        run: |
+          t=$(gh release list -R ggml-org/llama.cpp -L 1 --exclude-pre-releases --json tagName -q '.[0].tagName')
+          gh release download $t -R ggml-org/llama.cpp -p "*bin-ubuntu-x64.*" -D dl
+          cd dl && (unzip -q *.zip 2>/dev/null || tar xzf *.tar.gz) && cd ..
+          echo "LOCALFORGE_LLAMA_SERVER=$(find $PWD/dl -name llama-server -type f | head -1)" >> $GITHUB_ENV
+          echo "LD_LIBRARY_PATH=$(dirname $(find $PWD/dl -name llama-server -type f | head -1))" >> $GITHUB_ENV
+          echo "llama.cpp $t"
+      - run: LOCALFORGE_HOME=$PWD/lfhome python diag/memory_diag.py
