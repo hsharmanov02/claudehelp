@@ -1,8 +1,9 @@
-"""Real-model browser-task eval: runs LocalForge's own agent loop against a local test website and scores it.
+"""Real-model browser-task test: runs LocalForge's own agent loop against a small local test website and scores it.
 
-usage: python diag/browser_eval.py CODE_DIR MODEL_GGUF LABEL
+LocalForge.exe --browser-eval [MODEL.gguf]   (uses the last loaded model; never touches your chat or settings)
+python -m localforge.browser_eval CODE_DIR MODEL_GGUF LABEL   (CI: compare two versions of the code)
 """
-import json, re, sys, threading, time, urllib.parse
+import json, os, re, sys, threading, time, urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -92,45 +93,44 @@ def serve():
     return f"http://127.0.0.1:{srv.server_port}"
 
 
-BASE = serve() if __name__ == "__main__" else ""
+BASE = ""
 
-TASKS = [
-    ("shop", f"Go to {BASE}/ and add the cheapest blue kettle in the shop to my basket, then go to the basket and tell me the basket total.",
-     lambda ans: (STATE["basket"] == ["p3"], "19.75" in ans)),
-    ("signup", f"Go to {BASE}/signup and create an account: name Alex Doe, email alex@example.com, country Canada, accept the terms. "
-               "Then tell me the confirmation code.",
-     lambda ans: (bool(STATE["signup"]) and STATE["signup"].get("name") == "Alex Doe" and STATE["signup"].get("email") == "alex@example.com"
-                  and STATE["signup"].get("country") == "Canada" and "terms" in STATE["signup"], "LF-73920" in ans)),
-    ("status", f"Open {BASE}/status and tell me the incident ID and the API rate limit.",
-     lambda ans: (True, "INC-4471" in ans and "900" in ans)),
-]
+def tasks(BASE):
+    return [
+        ("shop", f"Go to {BASE}/ and add the cheapest blue kettle in the shop to my basket, then go to the basket and tell me the basket total.",
+         lambda ans: (STATE["basket"] == ["p3"], "19.75" in ans)),
+        ("signup", f"Go to {BASE}/signup and create an account: name Alex Doe, email alex@example.com, country Canada, accept the terms. "
+                   "Then tell me the confirmation code.",
+         lambda ans: (bool(STATE["signup"]) and STATE["signup"].get("name") == "Alex Doe" and STATE["signup"].get("email") == "alex@example.com"
+                      and STATE["signup"].get("country") == "Canada" and "terms" in STATE["signup"], "LF-73920" in ans)),
+        ("status", f"Open {BASE}/status and tell me the incident ID and the API rate limit.",
+         lambda ans: (True, "INC-4471" in ans and "900" in ans)),
+    ]
+    
 
 
 
-def main():
-    code = Path(sys.argv[1]).resolve()
-    model, label = sys.argv[2], sys.argv[3]
-    sys.path.insert(0, str(code))
-    from localforge import agent
-    MODEL, LABEL = model, label
+def run_eval(agent, model, label, log=print, limit=2700):
+    base = serve()
     app = agent.App()
     app.settings.set("autoApprove", True)
     app.settings.set("browserAutoApprove", True)
     app.settings.set("nCtx", 16384)
-    m = app.store.find(MODEL) or app.store.find(Path(MODEL).name) or next(iter(app.store.local_models()), None)
+    app.settings.set("foundModels", [str(model)])
+    m = app.store.find(str(model)) or app.store.find(Path(model).name) or next(iter(app.store.local_models()), None)
     assert m and app.load_model(m["path"], wait=True), (app.status, app.store.local_models())
-    print(f"=== {LABEL}: {app.status}", flush=True)
+    log(f"=== {label}: {app.status}")
     app.browser.ensure()          # fail fast if the browser can't start on this machine
-    print("browser ok:", app.browser.exe, flush=True)
-    score = 0
-    for name, task, check in TASKS:
+    log(f"browser ok: {app.browser.exe}")
+    score, total = 0, 0
+    for name, task, check in tasks(base):
         STATE.update(basket=[], signup=None)
         app.clear_chat()
         t0 = time.time()
         app.send(task)
         time.sleep(1)
         while app.generating:
-            if time.time() - t0 > 2700:
+            if time.time() - t0 > limit:
                 app.stop()
             time.sleep(1)
         answers = [m for m in app.messages if m["role"] == "assistant" and m["text"].strip()]
@@ -138,16 +138,58 @@ def main():
         did, said = check(final)
         ok = did and said
         score += ok
-        steps = len(answers)
-        print(f"\n##### {LABEL} {name}: {'PASS' if ok else 'FAIL'} (did it: {did}, answer right: {said}) "
-              f"{steps} replies, {time.time() - t0:.0f}s", flush=True)
+        total += 1
+        log(f"\n##### {label} {name}: {'PASS' if ok else 'FAIL'} (did it: {did}, answer right: {said}) "
+            f"{len(answers)} replies, {time.time() - t0:.0f}s")
         for m in app.messages:
             t = m["text"].replace("\n", " ⏎ ")
-            print(f"  [{m['role']}] {(m.get('stats') or '')} {t[:400]}")
-    print(f"\nSCORE {LABEL}: {score}/{len(TASKS)}", flush=True)
-    Path("score.txt").write_text(f"{LABEL} {score}/{len(TASKS)}\n")
+            log(f"  [{m['role']}] {(m.get('stats') or '')} {t[:400]}")
+    log(f"\nSCORE {label}: {score}/{total}")
     app.engine.unload()
     app.browser.close()
+    return score, total
+
+
+def run_installed(model=None) -> int:
+    """For LocalForge.exe --browser-eval: a separate data folder so the user's chat and settings stay as they are."""
+    from . import config
+    real = json.loads((config.data_dir() / "settings.json").read_text(encoding="utf-8")) if (config.data_dir() / "settings.json").exists() else {}
+    model = model or real.get("lastModel")
+    if not model or not Path(model).exists():
+        print("No model: pass a .gguf path or load one in LocalForge first.")
+        return 2
+    home = config.data_dir() / "browser-eval"
+    home.mkdir(parents=True, exist_ok=True)
+    keep = {k: real[k] for k in ("backend", "gpuLayers", "threads", "thinkBrowser") if k in real}
+    (home / "settings.json").write_text(json.dumps(keep), encoding="utf-8")
+    os.environ["LOCALFORGE_HOME"] = str(home)
+    out = open(Path(os.environ.get("LOCALFORGE_EVAL_LOG") or (home / "browser-eval.txt")), "w", encoding="utf-8", buffering=1)
+
+    def log(line):
+        out.write(line + "\n")
+        try:
+            print(line, flush=True)
+        except Exception:
+            pass
+    from . import agent
+    try:
+        score, total = run_eval(agent, model, Path(model).name, log, limit=900)
+    except Exception as e:
+        log(f"FAILED: {e!r}")
+        return 1
+    finally:
+        out.close()
+    return 0 if score == total else 3
+
+
+def main():
+    code = Path(sys.argv[1]).resolve()
+    model, label = sys.argv[2], sys.argv[3]
+    sys.path.insert(0, str(code))
+    import importlib
+    agent = importlib.import_module("localforge.agent")
+    score, _ = run_eval(agent, model, label, lambda l: print(l, flush=True))
+    Path("score.txt").write_text(f"{label} {score}\n")
 
 
 if __name__ == "__main__":

@@ -43,7 +43,7 @@ jobs:
       - name: Eval
         run: |
           code=$PWD; [ "${{ matrix.version }}" = old ] && code=$PWD/old
-          LOCALFORGE_HOME=$PWD/lfhome python diag/browser_eval.py $code $PWD/lfhome/models/model.gguf "${{ matrix.model }}-${{ matrix.version }}" 2>&1 | tee eval.log
+          LOCALFORGE_HOME=$PWD/lfhome python localforge/browser_eval.py $code $PWD/lfhome/models/model.gguf "${{ matrix.model }}-${{ matrix.version }}" 2>&1 | tee eval.log
       - uses: actions/upload-artifact@v4
         if: always()
         with: { name: "eval-${{ matrix.model }}-${{ matrix.version }}", path: eval.log }

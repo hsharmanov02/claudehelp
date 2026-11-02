@@ -18,12 +18,18 @@ def main(argv=None):
     ap.add_argument("--no-open", action="store_true", help="just run the server (for testing)")
     ap.add_argument("--selftest", action="store_true", help="check the engine, Hugging Face and a tiny model, then exit")
     ap.add_argument("--bench", nargs="+", metavar="MODEL.gguf", help="measure speed of one or more models, then exit")
+    ap.add_argument("--browser-eval", nargs="?", const="", metavar="MODEL.gguf",
+                    help="test the AI on website tasks with a real model (your chat and settings are left alone), then exit")
     ap.add_argument("--ctx", type=int, default=8192, help="context size for --bench")
     args = ap.parse_args(argv)
 
     if args.bench:
         from .bench import run as bench
         sys.exit(bench(args.bench, args.ctx))
+
+    if args.browser_eval is not None:
+        from .browser_eval import run_installed
+        sys.exit(run_installed(args.browser_eval or None))
 
     if args.selftest:
         from .selftest import run
