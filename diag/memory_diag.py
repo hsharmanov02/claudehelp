@@ -43,8 +43,9 @@ for repo, name in MODELS:
     print("loaded:", app.status, flush=True)
     for turn in ["My dog is called Biscuit and my favourite colour is teal. Just reply OK.",
                  "Write a python program that prints 17*23 and run it.",
-                 "What is 5+5?",
-                 "What was my previous prompt? And what is my dog called and what's my favourite colour?"]:
+                 "What is the capital of Japan?",
+                 "What did I ask you just before this message? Quote it.",
+                 "What is my dog's name and my favourite colour?"]:
         sent.clear()
         app.send(turn)
         wait(app)
