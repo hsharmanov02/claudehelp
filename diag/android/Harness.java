@@ -29,17 +29,25 @@ public class Harness {
             "What did I ask you just before this message? Quote it.",
             "What is my dog's name and my favourite colour?"
         };
+        boolean recap = a.length > 2 && a[2].equals("recap");
+        if (recap) msgs.set(0, new String[]{"system", sys + "\n- You remember this whole chat: the user's earlier messages and your replies are above. When the user refers to something earlier (\"my last question\", \"that\", \"again\"), use them. Never say you can't remember."});
+        List<String> asked = new ArrayList<>();
         for (String t : turns) {
-            msgs.add(new String[]{"user", t});
+            String sent = t;
+            if (recap && !asked.isEmpty()) {
+                StringBuilder r = new StringBuilder("[Chat so far. My earlier messages, oldest first:\n");
+                for (int i = 0; i < asked.size(); i++) r.append(i + 1).append(". \"").append(asked.get(i)).append("\"")
+                    .append(i == asked.size() - 1 ? "  <- my previous message, the one just before this one" : "").append("\n");
+                r.append("]\nMy new message: ");
+                sent = r + t;
+            }
+            msgs.add(new String[]{"user", sent});
             String cached = gen(shared, msgs);
-            long fresh = LlamaEngine.nativeLoad(model, 4096, 4);
-            String clean = gen(fresh, msgs);
-            LlamaEngine.nativeFree(fresh);
             System.out.println("\n### USER: " + t);
-            System.out.println("  app engine (cache reused): " + cached.replace("\n", " ").substring(0, Math.min(300, cached.length())));
-            System.out.println("  fresh engine (no cache)  : " + clean.replace("\n", " ").substring(0, Math.min(300, clean.length())));
-            System.out.println("  SAME: " + cached.equals(clean));
+            System.out.println("  reply: " + cached.replace("\n", " ").substring(0, Math.min(300, cached.length())));
+            msgs.set(msgs.size() - 1, new String[]{"user", t});
             msgs.add(new String[]{"assistant", cached});
+            asked.add(t);
         }
     }
 }

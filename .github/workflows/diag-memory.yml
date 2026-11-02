@@ -2,6 +2,7 @@ name: Memory diagnostic
 on: push
 jobs:
   diag:
+    if: false
     runs-on: ubuntu-latest
     timeout-minutes: 40
     steps:
@@ -45,9 +46,10 @@ jobs:
         run: |
           mkdir m
           curl -sL -o m/q35.gguf https://huggingface.co/mradermacher/Huihui-Qwen3.5-2B-abliterated-GGUF/resolve/main/Huihui-Qwen3.5-2B-abliterated.Q4_K_M.gguf
+          curl -sL -o m/q4.gguf https://huggingface.co/mradermacher/Qwen3-4B-abliterated-GGUF/resolve/main/Qwen3-4B-abliterated.Q4_K_M.gguf
           curl -sL -o m/q3.gguf https://huggingface.co/bartowski/mlabonne_Qwen3-1.7B-abliterated-GGUF/resolve/main/mlabonne_Qwen3-1.7B-abliterated-Q4_K_M.gguf
           python -c "from localforge import tools; open('sys.txt','w').write(tools.system_prompt('/storage/emulated/0','/data/run',['python','javascript'],'PC overview','Android 14'))"
       - name: Replay chat through the native engine
         run: |
           cd diag/android && javac -d out Harness.java com/localforge/app/engine/*.java
-          for m in q35 q3; do echo "===== $m"; LD_LIBRARY_PATH=$GITHUB_WORKSPACE/nb java -Djava.library.path=$GITHUB_WORKSPACE/nb -cp out Harness $GITHUB_WORKSPACE/m/$m.gguf $GITHUB_WORKSPACE/sys.txt 2>native-$m.log; grep -i "reusing" native-$m.log | tail -12; done
+          for m in q35 q3 q4; do for v in plain recap; do echo "===== $m $v"; ls -la $GITHUB_WORKSPACE/m/$m.gguf; LD_LIBRARY_PATH=$GITHUB_WORKSPACE/nb java -Djava.library.path=$GITHUB_WORKSPACE/nb -cp out Harness $GITHUB_WORKSPACE/m/$m.gguf $GITHUB_WORKSPACE/sys.txt $v 2>native.log || tail -5 native.log; done; done
