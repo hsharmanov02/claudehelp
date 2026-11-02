@@ -22,3 +22,32 @@ jobs:
           echo "LD_LIBRARY_PATH=$(dirname $(find $PWD/dl -name llama-server -type f | head -1))" >> $GITHUB_ENV
           echo "llama.cpp $t"
       - run: LOCALFORGE_HOME=$PWD/lfhome python diag/memory_diag.py
+
+  android:
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with: { ref: localforge-build, path: apk }
+      - uses: actions/setup-java@v4
+        with: { distribution: temurin, java-version: "17" }
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - name: Build the app's native engine for Linux (same llama.cpp b12025)
+        run: |
+          git clone --depth 1 --branch b12025 https://github.com/ggml-org/llama.cpp apk/app/src/main/cpp/llama.cpp
+          cmake -S apk/app/src/main/cpp -B nb -DCMAKE_BUILD_TYPE=Release
+          cmake --build nb -j4
+          find nb -name "*.so*" -exec cp -P {} nb/ \;
+          ls nb/*.so*
+      - name: Models and system prompt
+        run: |
+          mkdir m
+          curl -sL -o m/q35.gguf https://huggingface.co/mradermacher/Huihui-Qwen3.5-2B-abliterated-GGUF/resolve/main/Huihui-Qwen3.5-2B-abliterated.Q4_K_M.gguf
+          curl -sL -o m/q3.gguf https://huggingface.co/bartowski/mlabonne_Qwen3-1.7B-abliterated-GGUF/resolve/main/mlabonne_Qwen3-1.7B-abliterated-Q4_K_M.gguf
+          python -c "from localforge import tools; open('sys.txt','w').write(tools.system_prompt('/storage/emulated/0','/data/run',['python','javascript'],'PC overview','Android 14'))"
+      - name: Replay chat through the native engine
+        run: |
+          cd diag/android && javac -d out Harness.java com/localforge/app/engine/*.java
+          for m in q35 q3; do echo "===== $m"; LD_LIBRARY_PATH=$GITHUB_WORKSPACE/nb java -Djava.library.path=$GITHUB_WORKSPACE/nb -cp out Harness $GITHUB_WORKSPACE/m/$m.gguf $GITHUB_WORKSPACE/sys.txt 2>native-$m.log; grep -i "reusing" native-$m.log | tail -12; done
