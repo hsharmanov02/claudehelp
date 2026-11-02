@@ -107,6 +107,7 @@ object Engine {
         messages: List<ChatMessage>,
         maxTokens: Int,
         temperature: Float,
+        noThink: Boolean = false,
         onText: (String) -> Unit
     ): String = withContext(dispatcher) {
         val h = handle
@@ -116,7 +117,11 @@ object Engine {
             messages.map { it.role }.toTypedArray(),
             messages.map { utf8(it.content) }.toTypedArray()
         ) ?: throw IllegalStateException("This model's chat format isn't supported.")
-        val prompt = formatted
+        var prompt = formatted
+        // Thinking models (Qwen3 and similar) can "think" for thousands of tokens before answering. With thinking
+        // off, the reply starts after an empty think block, the same as their own "enable_thinking=false".
+        val text = String(formatted, Charsets.UTF_8)
+        if (noThink && text.endsWith("<|im_start|>assistant\n")) prompt = utf8(text + "<think>\n\n</think>\n\n")
         val out = StringBuilder()
         var pieces = 0
         var firstAt = 0L

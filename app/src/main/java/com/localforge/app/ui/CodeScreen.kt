@@ -257,7 +257,7 @@ internal fun MessageView(vm: AppViewModel, m: UiMessage, onSave: (Segment.Code) 
         Role.ASSISTANT -> Column(Modifier.fillMaxWidth()) {
             val display = prettify(m.text)
             if (display.isEmpty()) {
-                Text("Thinking…", color = C.Muted, fontSize = 14.sp)
+                LiveProgress(vm, m)
             }
             splitSegments(display).forEach { seg ->
                 when (seg) {
@@ -304,6 +304,27 @@ internal fun MessageView(vm: AppViewModel, m: UiMessage, onSave: (Segment.Code) 
             }
         }
         Role.NOTE -> Text(m.text, color = C.Gold, fontSize = 14.sp, modifier = Modifier.fillMaxWidth().padding(4.dp))
+    }
+}
+
+/** "Thinking… step 2 · 1:05 · 120 words" while a reply is being written, so a slow model never looks frozen. */
+@Composable
+private fun LiveProgress(vm: AppViewModel, m: UiMessage) {
+    var now by remember { mutableStateOf(System.currentTimeMillis()) }
+    LaunchedEffect(m) {
+        while (true) { kotlinx.coroutines.delay(1000); now = System.currentTimeMillis() }
+    }
+    val secs = if (vm.requestStartedAt > 0) ((now - vm.requestStartedAt) / 1000).coerceAtLeast(0) else 0
+    val words = m.text.split(Regex("\\s+")).count { it.isNotBlank() }
+    val active = vm.generating && vm.messages.lastOrNull() === m
+    val parts = buildList {
+        add("Step ${vm.stepNumber}")
+        add("%d:%02d".format(secs / 60, secs % 60))
+        if (words > 0) add("$words words of hidden thinking")
+    }
+    Column {
+        Text(if (active) "Thinking… " + parts.joinToString(" · ") else "(no reply)", color = C.Muted, fontSize = 14.sp)
+        if (active && words > 0) Text("Tap Stop if it takes too long. It stops by itself after a few minutes.", color = C.Muted, fontSize = 12.sp)
     }
 }
 

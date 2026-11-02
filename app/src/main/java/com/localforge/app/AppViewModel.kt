@@ -92,6 +92,20 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         private set
     var browserAutoApprove by mutableStateOf(prefs.getBoolean("browserAutoApprove", false))
         private set
+    /** Lets thinking models reason before answering. Off by default: on a phone it can take many minutes. */
+    var thinkHarder by mutableStateOf(prefs.getBoolean("thinkHarder", false))
+        private set
+    fun updateThinkHarder(v: Boolean) { thinkHarder = v; prefs.edit().putBoolean("thinkHarder", v).apply() }
+
+    /** Live progress of the current request, shown while the AI works ("Step 2 · 1:05"). */
+    var requestStartedAt by mutableStateOf(0L)
+        private set
+    var stepNumber by mutableStateOf(0)
+        private set
+    /** Longest one reply may take, and how long a whole request may keep using tools, before the app steps in. */
+    private val replyLimitMs get() = if (thinkHarder) 8 * 60_000L else 4 * 60_000L
+    private val requestLimitMs get() = if (thinkHarder) 20 * 60_000L else 10 * 60_000L
+    private var timeNudged = false
     /** "Ask AI about this page": the chat as a sheet over the live page in the Browser tab. */
     var pagePanelOpen by mutableStateOf(false)
 
@@ -369,6 +383,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         stepsLeft = 10
         totalSteps = 0
         resetRequestState()
+        requestStartedAt = System.currentTimeMillis()
+        timeNudged = false
         if (onPage && WebBrowser.hasPage) {
             // Small models often skip reading the page or write broken tags: the app reads it first and hands it over.
             viewModelScope.launch {
@@ -776,10 +792,35 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             try {
                 while (stepsLeft > 0) {
                     stepsLeft--
+                    // Loop stopper: past the time budget, no more tools. One last turn to answer with what it has.
+                    if (!timeNudged && requestStartedAt > 0 && System.currentTimeMillis() - requestStartedAt > requestLimitMs && totalSteps > 0) {
+                        timeNudged = true
+                        messages += UiMessage(Role.TOOL, "Time is up. STOP using tools now. Answer the user in a few sentences " +
+                            "with what you found so far, and say what you couldn't finish.")
+                        stepsLeft = 0
+                    }
+                    stepNumber = totalSteps + 1
                     val reply = UiMessage(Role.ASSISTANT, "")
                     messages += reply
-                    val full = Engine.chat(history(), maxTokens, temperature) { piece ->
-                        main.post { reply.text += piece }
+                    var cutShort = false
+                    val watchdog = launch {
+                        delay(replyLimitMs)
+                        cutShort = true
+                        Engine.stop()
+                    }
+                    val full = try {
+                        Engine.chat(history(), maxTokens, temperature, noThink = !thinkHarder) { piece ->
+                            main.post { reply.text += piece }
+                        }
+                    } finally {
+                        watchdog.cancel()
+                    }
+                    if (cutShort) {
+                        reply.text = FileTools.stripThinking(full).ifEmpty { "(no answer yet)" }
+                        messages += UiMessage(Role.NOTE, "Stopped this reply after ${replyLimitMs / 60_000} minutes so it doesn't run forever. " +
+                            "The model is too slow or too small for this task on this phone. Try a simpler question, " +
+                            "a faster/bigger model, or say \"continue\".")
+                        break
                     }
                     reply.text = FileTools.stripThinking(full)
                     if (reply.text.isEmpty()) reply.text = if (stopRequested) "(stopped)" else "(no reply)"
