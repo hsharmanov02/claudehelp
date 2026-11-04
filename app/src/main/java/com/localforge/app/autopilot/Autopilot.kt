@@ -288,7 +288,7 @@ object Autopilot {
         attachLoop()
     }
 
-    private fun setStatus(s: String) {
+    private fun showStatus(s: String) {
         if (s == status) return
         status = s
         AutopilotService.update(app, s)
@@ -306,7 +306,7 @@ object Autopilot {
                 errors++
                 addJournal("Round failed: ${e.message ?: e.javaClass.simpleName}")
                 nextAt = now() + maxOf(60, pauseSec) * 1000L
-                setStatus("Last round failed (${e.message}). Trying again soon.")
+                showStatus("Last round failed (${e.message}). Trying again soon.")
             } finally {
                 inRound = false
             }
@@ -315,21 +315,21 @@ object Autopilot {
     }
 
     private suspend fun tick() {
-        if (!enabled) { setStatus("Off"); return }
-        if (awaitingConsent) { setStatus("Your phone restarted. Waiting for you to say Continue."); return }
+        if (!enabled) { showStatus("Off"); return }
+        if (awaitingConsent) { showStatus("Your phone restarted. Waiting for you to say Continue."); return }
         val vm = app.state
         when {
-            vm.loading -> { setStatus("Waiting: a model is loading…"); return }
-            vm.generating -> { setStatus("Waiting: the AI is busy with a chat message…"); return }
+            vm.loading -> { showStatus("Waiting: a model is loading…"); return }
+            vm.generating -> { showStatus("Waiting: the AI is busy with a chat message…"); return }
             vm.hasPendingCard() -> {
-                setStatus("Waiting for your approval in the Code tab.")
+                showStatus("Waiting for your approval in the Code tab.")
                 if (!approvalNotified) { approvalNotified = true; AutopilotNotify.attention(app, "The AI is waiting for your approval in the Code tab.") }
                 return
             }
         }
         approvalNotified = false
         val left = nextAt - now()
-        if (left > 0) { setStatus("Next round in ${AutopilotLogic.dur((left + 999) / 1000)}"); return }
+        if (left > 0) { showStatus("Next round in ${AutopilotLogic.dur((left + 999) / 1000)}"); return }
         if (!ensureModel()) return
         runRound()
     }
@@ -339,11 +339,11 @@ object Autopilot {
         if (Engine.isLoaded && (modelName == null || vm.loadedModel == modelName)) { loadFails = 0; return true }
         vm.refreshModels()
         if (vm.localModels.isEmpty()) {
-            setStatus("Waiting: no models found. Allow all-files access, or download one in Models.")
+            showStatus("Waiting: no models found. Allow all-files access, or download one in Models.")
             nextAt = now() + 30_000
             return false
         }
-        setStatus("Loading ${(modelName ?: vm.lastModelName ?: "the model").removeSuffix(".gguf")}…")
+        showStatus("Loading ${(modelName ?: vm.lastModelName ?: "the model").removeSuffix(".gguf")}…")
         if (vm.ensureModel(modelName)) {
             loadFails = 0
             if (modelName == null) { modelName = vm.loadedModel; save() }
@@ -352,7 +352,7 @@ object Autopilot {
         loadFails++
         val wait = AutopilotLogic.loadBackoffSec(loadFails)
         nextAt = now() + wait * 1000L
-        setStatus("Couldn't load the model (${vm.engineMessage ?: "unknown error"}). Trying again in ${AutopilotLogic.dur(wait.toLong())}.")
+        showStatus("Couldn't load the model (${vm.engineMessage ?: "unknown error"}). Trying again in ${AutopilotLogic.dur(wait.toLong())}.")
         return false
     }
 
@@ -362,7 +362,7 @@ object Autopilot {
         val n = round
         save()
         inRound = true
-        setStatus("Round $n running…")
+        showStatus("Round $n running…")
         val browserLine = if (WebBrowser.hasPage) "The browser is on: ${WebBrowser.title} (${WebBrowser.url})" else ""
         val prompt = AutopilotLogic.prompt(goal, n, SimpleDateFormat("EEEE yyyy-MM-dd HH:mm", Locale.US).format(Date()),
             memory.toList(), journal.toList(), browserLine)
@@ -395,7 +395,7 @@ object Autopilot {
         vm.pruneMessages(AutopilotLogic.KEEP_MESSAGES)
         vm.saveChat()
         inRound = false
-        setStatus(
+        showStatus(
             if (vm.hasPendingCard()) "Waiting for your approval in the Code tab."
             else "Round $n done. Next round in ${AutopilotLogic.dur(pause.toLong())}."
         )
