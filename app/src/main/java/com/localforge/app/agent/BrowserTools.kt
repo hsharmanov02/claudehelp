@@ -14,7 +14,7 @@ object BrowserTools {
     private val bOpenUrl = Regex("""<open\s+(?:url|href|path)\s*=\s*"(https?://[^"]+|[^"]+\.html?)"\s*/?>""", opt)
     private val bFetch = Regex("""<fetch\s+(?:url|href)\s*=\s*"([^"]+)"\s*/?>""", opt)
     private val bPage = Regex("""<page\s*/?>""", opt)
-    private val bNetwork = Regex("""<(?:network|requests|api)\s*/?>""", opt)
+    private val bNetwork = Regex("""<(?:network|requests|api)(?:\s+(all|detail|body|ws|websockets?|save|har)\s*=\s*"([^"]*)")?\s*/?>""", opt)
     private val bExtract = Regex("""<extract(?:\s+(?:query|q|what|about)\s*=\s*"([^"]*)")?\s*/?>""", opt)
     private val bScroll = Regex("""<scroll(?:\s+(?:dir|direction)\s*=\s*"([^"]*)")?\s*/?>""", opt)
     private val bClick = Regex("""<click\s+(n|id|element|row)\s*=\s*"?(\d+)"?\s*/?>""", opt)
@@ -40,7 +40,9 @@ YOU HAVE YOUR OWN WEB BROWSER (the user watches it live in the Browser tab and s
 <type n="5">text</type>        fill input [5]; add submit="true" to press Enter after
 <press key="Enter"/>           press a key (Enter, Tab, Escape, PageDown, ArrowDown)
 <scroll dir="down"/>           scroll down (or up) and read what is visible
-<network/>                     the page's own backend API calls (the JSON data the site loaded)
+<network/>                     the page's own backend API calls (the JSON data the site loaded), numbered
+<network detail="3"/>          call 3 in full: headers, data sent, status, timing, TLS · <network body="3"/> its whole response
+<network all=""/>              every request (all="js", all="img", all="api" or a site name) · <network ws=""/> WebSockets · <network save=""/> .har file
 <js>document.title</js>        run JavaScript IN the live page, logged in as the user; the last expression is the result.
 <mod site="example.com" note="what it does">JS</mod>   save a change to a site: it is applied every time that site loads
 YOU HAVE REAL ACCESS TO THE OPEN WEBSITE through <js>:
@@ -74,7 +76,10 @@ Browser rules:
         bOpenUrl.findAll(reply).forEach { add(it, "browse", it.groupValues[1].trim()) }
         bFetch.findAll(reply).forEach { add(it, "fetch", it.groupValues[1].trim()) }
         bPage.findAll(reply).forEach { add(it, "page", "") }
-        bNetwork.findAll(reply).forEach { add(it, "network", "") }
+        bNetwork.findAll(reply).forEach { m ->
+            val mode = when (val k = m.groupValues[1].lowercase()) { "websocket", "websockets" -> "ws"; "har" -> "save"; else -> k }
+            add(m, "network", mode, m.groupValues[2].trim(), m.groupValues[2].trim())
+        }
         bExtract.findAll(reply).forEach { add(it, "extract", it.groupValues[1].trim()) }
         bScroll.findAll(reply).forEach { add(it, "scroll", it.groupValues[1].ifBlank { "down" }.trim().lowercase()) }
         bClick.findAll(reply).forEach { add(it, "click", it.groupValues[2], extra = if (it.groupValues[1].lowercase() == "row") "row" else "") }
@@ -105,7 +110,14 @@ Browser rules:
         "type" -> "⌨ Type into [$path]"
         "press" -> "⌨ Press $path"
         "js" -> "🧩 Run a page script"
-        "network" -> "📡 Read the page's API data"
+        "network" -> when (path) {
+            "detail" -> "📡 Inspect request #$extra"
+            "body" -> "📡 Read response #$extra"
+            "all" -> "📡 List every request"
+            "ws" -> "📡 Read WebSockets"
+            "save" -> "💾 Save network log (.har)"
+            else -> "📡 Read the page's API data"
+        }
         "mod" -> "✎ Save an edit to $path"
         else -> kind
     }
@@ -148,7 +160,14 @@ Browser rules:
                 "To open a row's main link use <click row=\"N\"/> (N = the row's number here, NOT a page element number). " +
                 "For another link in a row (e.g. its comments), use <browse url=\"that link\"/>:\n" + b.extract(a.path)
             "page" -> { val r = b.describe(); r + blockedHint(r) }
-            "network" -> b.network()
+            "network" -> when (a.path) {
+                "detail" -> NetInspect.detail(a.content.filter { it.isDigit() }.toIntOrNull() ?: -1)
+                "body" -> NetInspect.body(a.content.filter { it.isDigit() }.toIntOrNull() ?: -1)
+                "all" -> NetInspect.all(a.content)
+                "ws" -> NetInspect.sockets()
+                "save" -> NetInspect.saveHar()
+                else -> b.network()
+            }
             "fetch" -> { val r = b.fetchRaw(a.path); r + blockedHint(r) }
             "scroll" -> "Scrolled. Visible part of the page:\n" + b.scroll(a.path.startsWith("up"))
             "click" -> {

@@ -96,6 +96,10 @@ private fun browserChip(m: MatchResult): String {
     var kind = m.groupValues[1].lowercase()
     if (kind == "goto" || kind == "navigate") kind = "browse"
     val attrs = attr.findAll(m.groupValues[2]).associate { it.groupValues[1].lowercase() to it.groupValues[2] }
+    if (kind == "network" || kind == "requests" || kind == "api") {
+        val mode = attrs.keys.firstOrNull() ?: ""
+        return "\n" + BrowserTools.chip("network", if (mode.startsWith("websocket")) "ws" else if (mode == "har") "save" else mode, attrs[mode] ?: "") + "\n"
+    }
     val path = attrs["url"] ?: attrs["href"] ?: attrs["query"] ?: attrs["q"] ?: attrs["n"] ?: attrs["row"] ?: attrs["key"] ?: attrs["dir"] ?: ""
     return "\n" + BrowserTools.chip(kind, path, if (attrs.containsKey("row")) "row" else "") + "\n"
 }

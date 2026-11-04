@@ -1,4 +1,4 @@
-name: Build LocalForge APK
+name: Build LocalForge and LocalForge Autopilot APKs
 
 on:
   push:
@@ -37,7 +37,7 @@ jobs:
         shell: bash
         run: |
           set -o pipefail
-          gradle :app:assembleRelease --no-daemon --stacktrace 2>&1 | tee build.log
+          gradle :app:assembleForgeRelease :app:assembleAutopilotRelease :app:testAutopilotReleaseUnitTest --no-daemon --stacktrace 2>&1 | tee build.log
 
       - name: Publish build log when the build fails
         if: failure()
@@ -50,22 +50,28 @@ jobs:
         if: failure()
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: build-log
-          name: Last failed build log
+          tag_name: ${{ github.ref == 'refs/heads/localforge-build' && 'build-log' || 'autopilot-build-log' }}
+          name: Last failed build log (${{ github.ref_name }})
           body: Errors from the last failed build (${{ github.sha }}).
           files: build-errors.txt
           prerelease: true
           make_latest: false
 
-      - name: Rename APK
-        run: cp app/build/outputs/apk/release/app-release.apk LocalForge.apk
+      - name: Rename APKs
+        run: |
+          cp app/build/outputs/apk/forge/release/app-forge-release.apk LocalForge.apk
+          cp app/build/outputs/apk/autopilot/release/app-autopilot-release.apk LocalForge-Autopilot.apk
 
       - uses: actions/upload-artifact@v4
         with:
-          name: LocalForge-apk
-          path: LocalForge.apk
+          name: LocalForge-apks
+          path: |
+            LocalForge.apk
+            LocalForge-Autopilot.apk
 
-      - name: Publish as "latest" release (easy phone download)
+      # The main LocalForge download only changes from the localforge-build branch.
+      - name: Publish LocalForge as "latest" release (easy phone download)
+        if: github.ref == 'refs/heads/localforge-build'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: latest
@@ -73,3 +79,17 @@ jobs:
           body: Built from commit ${{ github.sha }}. Download LocalForge.apk below and open it on your phone.
           files: LocalForge.apk
           make_latest: true
+
+      - name: Publish LocalForge Autopilot release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: autopilot-latest
+          name: LocalForge Autopilot latest build
+          body: |
+            Built from ${{ github.ref_name }} at commit ${{ github.sha }}.
+            LocalForge-Autopilot.apk is the 24/7 app. LocalForge.apk is the matching LocalForge update (shares its models with Autopilot).
+          files: |
+            LocalForge-Autopilot.apk
+            LocalForge.apk
+          prerelease: false
+          make_latest: false

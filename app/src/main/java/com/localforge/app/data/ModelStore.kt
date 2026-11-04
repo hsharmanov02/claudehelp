@@ -38,10 +38,59 @@ object Uncensored {
     fun matches(name: String): Boolean = markers.any { name.contains(it, ignoreCase = true) }
 }
 
-/** Downloaded GGUF files live in Android/data/com.localforge.app/files/models. */
+/**
+ * Downloaded GGUF files live in /sdcard/LocalForge/models, shared by LocalForge and LocalForge Autopilot
+ * (both need all-files access for it). Without that access, or for models downloaded by older versions,
+ * the app's own folder Android/data/<app id>/files/models is used too.
+ */
 class ModelStore(private val context: Context) {
     private val prefs = context.getSharedPreferences("models", Context.MODE_PRIVATE)
-    val dir: File = (context.getExternalFilesDir("models") ?: File(context.filesDir, "models")).also { it.mkdirs() }
+    /** The app's private model folder (older versions downloaded here; other apps can't read it). */
+    val privateDir: File = (context.getExternalFilesDir("models") ?: File(context.filesDir, "models")).also { it.mkdirs() }
+    private val shared get() = Environment.isExternalStorageManager()
+    /** Where new downloads go. */
+    val dir: File get() = if (shared) sharedDir().also { it.mkdirs() } else privateDir
+
+    companion object {
+        /** One model folder for both apps. */
+        fun sharedDir(): File = File(Environment.getExternalStorageDirectory(), "LocalForge/models")
+    }
+
+    private fun ggufsIn(d: File): List<File> =
+        d.listFiles { f -> f.isFile && f.name.endsWith(".gguf", true) }?.toList() ?: emptyList()
+
+    @Volatile var moving: String? = null
+        private set
+
+    /**
+     * Moves models from the private folder into the shared one, so the other LocalForge app can use them too.
+     * A rename when Android allows it (instant), otherwise a copy that is only switched over once complete.
+     * [skip] is the model that's loaded right now: it stays where it is until the next time.
+     * Returns how many models were moved.
+     */
+    suspend fun shareModels(skip: String?): Int = withContext(Dispatchers.IO) {
+        if (!shared || privateDir.absolutePath == sharedDir().absolutePath) return@withContext 0
+        val target = sharedDir().also { it.mkdirs() }
+        var moved = 0
+        for (f in ggufsIn(privateDir)) {
+            if (f.absolutePath == skip) continue
+            val dest = File(target, f.name)
+            if (dest.exists() && dest.length() == f.length()) { f.delete(); moved++; continue }
+            if (f.renameTo(dest)) { moved++; continue }
+            if (StatFs(target.absolutePath).availableBytes < f.length() + 512L * 1024 * 1024) continue
+            val part = File(target, f.name + ".moving")
+            try {
+                moving = f.name
+                f.inputStream().use { input -> FileOutputStream(part).use { out -> input.copyTo(out, 1024 * 1024) } }
+                if (part.length() == f.length() && part.renameTo(dest)) { f.delete(); moved++ } else part.delete()
+            } catch (e: Exception) {
+                part.delete()
+            } finally {
+                moving = null
+            }
+        }
+        moved
+    }
 
     fun deviceInfo(): DeviceInfo {
         val am = context.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
@@ -59,7 +108,7 @@ class ModelStore(private val context: Context) {
 
     /** Models in the app folder plus uncensored GGUFs found elsewhere on the phone by a scan. */
     fun localModels(): List<LocalModel> {
-        val own = dir.listFiles { f -> f.isFile && f.name.endsWith(".gguf", true) }?.toList() ?: emptyList()
+        val own = ggufsIn(privateDir) + (if (shared) ggufsIn(sharedDir()) else emptyList())
         val found = (prefs.getStringSet("found", emptySet()) ?: emptySet()).map { File(it) }.filter { it.isFile }
         return (own + found).distinctBy { it.absolutePath }.map { LocalModel(it) }.sortedBy { it.name.lowercase() }
     }
@@ -87,8 +136,14 @@ class ModelStore(private val context: Context) {
         hits.size
     }
 
+    /** True for models in a LocalForge model folder (deleting removes the file); false for ones found by a scan. */
+    fun isOwn(model: LocalModel): Boolean {
+        val parent = model.file.parentFile?.absolutePath
+        return parent == privateDir.absolutePath || parent == sharedDir().absolutePath
+    }
+
     fun delete(model: LocalModel) {
-        if (model.file.parentFile == dir) {
+        if (isOwn(model)) {
             model.file.delete()
         } else {
             // Found by a scan: just forget it, never delete the user's own copy.

@@ -31,6 +31,13 @@ import androidx.compose.material.icons.filled.Code
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Public
+import androidx.compose.material.icons.filled.SmartToy
+import android.content.Intent
+import com.localforge.app.autopilot.Autopilot
+import com.localforge.app.autopilot.AutopilotNotify
+import com.localforge.app.autopilot.AutopilotService
+import com.localforge.app.ui.AutopilotScreen
+import com.localforge.app.ui.ConsentDialog
 import com.localforge.app.agent.WebBrowser
 import com.localforge.app.ui.BrowserScreen
 import androidx.compose.material.icons.filled.ViewList
@@ -70,11 +77,22 @@ class MainActivity : ComponentActivity() {
         ) {
             askNotifications.launch(Manifest.permission.POST_NOTIFICATIONS)
         }
+        if (BuildConfig.AUTOPILOT) Autopilot.init(this)
+        openAutopilotIfAsked(intent)
         setContent {
             LocalForgeTheme {
                 App(vm)
             }
         }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        openAutopilotIfAsked(intent)
+    }
+
+    private fun openAutopilotIfAsked(intent: Intent?) {
+        if (BuildConfig.AUTOPILOT && intent?.getBooleanExtra(AutopilotNotify.EXTRA_AUTOPILOT, false) == true) vm.tab = Tab.AUTOPILOT
     }
 
     override fun onStart() {
@@ -99,6 +117,9 @@ class MainActivity : ComponentActivity() {
         vm.refreshPermission()
         vm.refreshModels()
         vm.refreshTermux()
+        if (BuildConfig.AUTOPILOT && Autopilot.enabled && !Autopilot.awaitingConsent && !AutopilotService.running) {
+            AutopilotService.start(this)
+        }
     }
 }
 
@@ -124,6 +145,7 @@ fun App(vm: AppViewModel) {
         } else Column(Modifier.fillMaxSize()) {
             Box(Modifier.weight(1f)) {
                 when (vm.tab) {
+                    Tab.AUTOPILOT -> AutopilotScreen(vm)
                     Tab.HOME -> HomeScreen(vm)
                     Tab.MODELS -> ModelsScreen(vm)
                     Tab.CODE -> CodeScreen(vm)
@@ -133,12 +155,15 @@ fun App(vm: AppViewModel) {
             }
             BottomBar(vm.tab) { vm.tab = it }
         }
+        // After a reboot: ask before loading the model, whichever screen is open.
+        if (BuildConfig.AUTOPILOT && Autopilot.awaitingConsent) ConsentDialog()
     }
 }
 
 @Composable
 private fun BottomBar(current: Tab, onSelect: (Tab) -> Unit) {
-    val items = listOf(
+    val items = listOfNotNull(
+        if (BuildConfig.AUTOPILOT) Tab.AUTOPILOT to Icons.Filled.SmartToy else null,
         Tab.HOME to Icons.Filled.Home,
         Tab.MODELS to Icons.Filled.ViewList,
         Tab.CODE to Icons.Filled.Code,
@@ -148,7 +173,7 @@ private fun BottomBar(current: Tab, onSelect: (Tab) -> Unit) {
     Row(
         Modifier
             .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 8.dp)
+            .padding(horizontal = if (items.size > 5) 8.dp else 16.dp, vertical = 8.dp)
             .clip(RoundedCornerShape(50))
             .background(C.Card)
             .border(1.5.dp, C.Border, RoundedCornerShape(50))
@@ -156,15 +181,16 @@ private fun BottomBar(current: Tab, onSelect: (Tab) -> Unit) {
         horizontalArrangement = Arrangement.SpaceEvenly,
         verticalAlignment = Alignment.CenterVertically
     ) {
-        items.forEach { (tab, icon) -> NavItem(icon, tab == current) { onSelect(tab) } }
+        val itemSize = if (items.size > 5) 46.dp else 54.dp
+        items.forEach { (tab, icon) -> NavItem(icon, tab == current, itemSize) { onSelect(tab) } }
     }
 }
 
 @Composable
-private fun NavItem(icon: ImageVector, selected: Boolean, onClick: () -> Unit) {
+private fun NavItem(icon: ImageVector, selected: Boolean, size: androidx.compose.ui.unit.Dp, onClick: () -> Unit) {
     Box(
         Modifier
-            .size(54.dp)
+            .size(size)
             .clip(CircleShape)
             .background(if (selected) Color.White else Color.Transparent)
             .clickable(onClick = onClick),

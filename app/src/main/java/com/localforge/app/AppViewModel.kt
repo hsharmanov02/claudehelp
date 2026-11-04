@@ -41,7 +41,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 
-enum class Tab { HOME, MODELS, CODE, BROWSER, FILES }
+enum class Tab { AUTOPILOT, HOME, MODELS, CODE, BROWSER, FILES }
 enum class Role { USER, ASSISTANT, TOOL, RUN, NOTE }
 enum class ActionStatus { PENDING, DONE, REJECTED }
 
@@ -73,7 +73,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     val store = ModelStore(app)
     private val main = Handler(Looper.getMainLooper())
 
-    var tab by mutableStateOf(Tab.HOME)
+    var tab by mutableStateOf(if (BuildConfig.AUTOPILOT) Tab.AUTOPILOT else Tab.HOME)
     var hasFileAccess by mutableStateOf(false)
         private set
 
@@ -90,7 +90,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         private set
     var hfToken by mutableStateOf(prefs.getString("hfToken", "") ?: "")
         private set
-    var browserAutoApprove by mutableStateOf(prefs.getBoolean("browserAutoApprove", false))
+    // The 24/7 Autopilot runs unattended, so there the AI may click and type without asking (deletes still ask).
+    var browserAutoApprove by mutableStateOf(prefs.getBoolean("browserAutoApprove", BuildConfig.AUTOPILOT))
         private set
     /** Lets thinking models reason before answering. Off by default: on a phone it can take many minutes. */
     var thinkHarder by mutableStateOf(prefs.getBoolean("thinkHarder2", true))
@@ -165,6 +166,27 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         hasFileAccess = Environment.isExternalStorageManager()
         if (hasFileAccess && entries.isEmpty()) refreshFiles()
         if (hasFileAccess) viewModelScope.launch { try { FileIndex.ensureFresh() } catch (_: Exception) {} }
+        if (hasFileAccess) shareModels()
+    }
+
+    private var sharing = false
+
+    /** Puts models in /sdcard/LocalForge/models so LocalForge and LocalForge Autopilot both use the same files. */
+    private fun shareModels() {
+        if (sharing) return
+        sharing = true
+        viewModelScope.launch {
+            try {
+                val n = store.shareModels(Engine.loadedPath)
+                if (n > 0) {
+                    refreshModels()
+                    if (!loading) engineMessage = "Moved $n model(s) to the shared folder LocalForge/models, so both LocalForge apps can use them."
+                }
+            } catch (_: Exception) {
+            } finally {
+                sharing = false
+            }
+        }
     }
 
     fun refreshModels() {
@@ -430,6 +452,42 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             }
             runAgent()
         }
+    }
+
+    // ---- Autopilot hooks (LocalForge Autopilot drives the normal chat loop, one round at a time) ----
+
+    /** Starts one request with a prompt written by the app. Returns false if the AI is busy. */
+    fun sendAuto(prompt: String, display: String): Boolean {
+        if (generating || loading || !Engine.isLoaded) return false
+        messages += UiMessage(Role.USER, display, prompt)
+        stepsLeft = 10
+        totalSteps = 0
+        resetRequestState()
+        requestStartedAt = System.currentTimeMillis()
+        timeNudged = false
+        runAgent()
+        return true
+    }
+
+    /** Loads [name] (or the last used / only model) and waits. Returns true when a model is ready. */
+    suspend fun ensureModel(name: String?): Boolean {
+        if (Engine.isLoaded && (name == null || loadedModel == name)) return true
+        refreshModels()
+        val pick = localModels.firstOrNull { it.name == name } ?: localModels.firstOrNull { it.name == lastModelName }
+            ?: localModels.singleOrNull() ?: return false
+        if (Engine.isLoaded && loadedModel == pick.name) return true
+        if (loading) return false
+        return loadModelNow(pick)
+    }
+
+    /** An approval card is waiting in the chat. */
+    fun hasPendingCard(): Boolean = messages.takeLast(10).any { m -> m.actions.any { it.status == ActionStatus.PENDING } }
+
+    /** A 24/7 chat would grow forever: the Autopilot's memory keeps what matters, so drop the oldest messages. */
+    fun pruneMessages(keep: Int) {
+        if (generating || messages.size <= keep) return
+        repeat(messages.size - keep) { messages.removeAt(0) }
+        saveChat()
     }
 
     private val fileWords = Regex(
@@ -762,7 +820,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     /** Shows the Browser tab with the chat panel open, so the user can watch the AI work on the page. */
     private fun showBrowser() {
         main.post {
-            if (tab != Tab.BROWSER) { tab = Tab.BROWSER; pagePanelOpen = true }
+            // The Autopilot works in the background: don't pull the user away from the screen they're on.
+            if (tab != Tab.BROWSER && tab != Tab.AUTOPILOT) { tab = Tab.BROWSER; pagePanelOpen = true }
         }
     }
 
@@ -1072,7 +1131,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                         var a = a0
                         if (a is FileAction.Browser) {
                             if (a.kind == "browse" || a.kind == "fetch") a = fixUrl(a)
-                            val key = "${a.kind}|${a.path}|${a.content}" + if (a.kind in setOf("extract", "page", "scroll")) "|" + WebBrowser.url else ""
+                            val key = "${a.kind}|${a.path}|${a.content}" + if (a.kind in setOf("extract", "page", "scroll", "network")) "|" + WebBrowser.url else ""
                             val site = siteFor(a)
                             when {
                                 a.kind in BrowserTools.PAGE_KINDS && !WebBrowser.hasPage -> {
