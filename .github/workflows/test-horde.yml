@@ -1,5 +1,6 @@
 name: Test AI Horde (no sign-up)
 
+# Tests every 20B+ model online on AI Horde for refusals, with the app's own system prompt.
 on:
   push:
     paths:
@@ -13,10 +14,8 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
-      - name: Try AI Horde anonymously
+      - name: Test the models
         run: python3 -u remote/test_horde.py
-      - name: How fast is a GitHub runner itself? (CPU, 16 GB RAM)
-        run: nproc; free -g; lscpu | grep -E "Model name|Flags" | cut -c1-120
