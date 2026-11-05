@@ -143,9 +143,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     /** Checks the address and key (waking the GPU if needed) and uses the remote model for every chat. */
     fun connectRemote(url: String, key: String) {
-        if (remoteBusy || generating) return
+        if (remoteBusy) return
         remoteBusy = true
-        viewModelScope.launch { connectRemoteNow(url, key); remoteBusy = false }
+        viewModelScope.launch { stopReplyForSwitch(); connectRemoteNow(url, key); remoteBusy = false }
     }
 
     private suspend fun connectRemoteNow(url: String, key: String): Boolean {
@@ -202,8 +202,25 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     /** Uses [m] on AI Horde for every chat (and the Autopilot). */
     fun useHordeModel(m: HordeEngine.HordeModel, key: String) {
-        if (generating) return
+        if (hordeBusy) return
+        hordeBusy = true
+        hordeMessage = "Switching to ${m.short}…"
         viewModelScope.launch {
+            try { switchToHorde(m, key) } finally { hordeBusy = false }
+        }
+    }
+
+    /** Stops a reply that's still being written (e.g. an Autopilot round on the phone's model), so the engine can change. */
+    private suspend fun stopReplyForSwitch() {
+        if (!generating) return
+        stopGenerating()
+        val until = System.currentTimeMillis() + 20_000
+        while (generating && System.currentTimeMillis() < until) delay(200)
+    }
+
+    private suspend fun switchToHorde(m: HordeEngine.HordeModel, key: String) {
+        run {
+            stopReplyForSwitch()
             if (useRemote) disconnectRemote()
             if (Engine.isLoaded && !Engine.isHorde) Engine.unload()
             hordeKey = key.trim()
@@ -213,6 +230,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 .putInt("hordeCtx", HordeEngine.ctx).putInt("hordeReply", HordeEngine.maxReply).apply()
             loadedModel = "🌐 " + m.short
             engineMessage = "Using ${m.short} on AI Horde (${HordeEngine.ctx} tokens of context)"
+            hordeMessage = "Ready: every chat now uses ${m.short}."
         }
     }
 

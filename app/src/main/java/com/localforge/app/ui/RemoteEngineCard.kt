@@ -81,13 +81,13 @@ fun RemoteEngineCard(vm: AppViewModel) {
             Spacer(Modifier.height(10.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
                 if (on) {
-                    OutlinedButton(onClick = { vm.disconnectRemote() }, enabled = !vm.generating) {
+                    OutlinedButton(onClick = { vm.stopGenerating(); vm.disconnectRemote() }) {
                         Text("Use this phone instead", color = C.Bad)
                     }
                 } else {
                     Button(
                         onClick = { vm.connectRemote(url, key) },
-                        enabled = !vm.remoteBusy && !vm.generating && url.isNotBlank() && key.isNotBlank(),
+                        enabled = !vm.remoteBusy && url.isNotBlank() && key.isNotBlank(),
                         colors = ButtonDefaults.buttonColors(containerColor = C.Accent)
                     ) {
                         if (vm.remoteBusy) {
@@ -140,14 +140,14 @@ fun HordeEngineCard(vm: AppViewModel) {
                 OutlinedButton(onClick = { open = true; vm.fetchHordeModels() }, enabled = !vm.hordeBusy) {
                     Text(if (vm.hordeBusy) "Checking…" else if (on) "Switch model" else "Refresh")
                 }
-                if (on) OutlinedButton(onClick = { vm.stopHorde() }, enabled = !vm.generating) { Text("Stop using Horde", color = C.Bad) }
+                if (on) OutlinedButton(onClick = { vm.stopGenerating(); vm.stopHorde() }) { Text("Stop using Horde", color = C.Bad) }
             }
             vm.hordeModels.take(14).forEach { m ->
                 val current = on && HordeEngine.model == m.name
                 Row(
                     Modifier.fillMaxWidth().padding(top = 6.dp)
                         .clip(RoundedCornerShape(14.dp)).background(if (current) C.AccentDark else C.CardInner)
-                        .clickable(enabled = !vm.generating) { vm.useHordeModel(m, vm.hordeKey) }
+                        .clickable(enabled = !vm.hordeBusy) { vm.useHordeModel(m, vm.hordeKey) }
                         .padding(horizontal = 12.dp, vertical = 10.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
