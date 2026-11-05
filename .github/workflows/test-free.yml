@@ -16,4 +16,5 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
+      - run: pip install -q gradio_client
       - run: python3 -u remote/probe_free.py
