@@ -130,7 +130,7 @@ fun HordeEngineCard(vm: AppViewModel) {
         }
         Text(
             if (on) "${HordeEngine.model.substringAfterLast('/')} · ${HordeEngine.ctx} tokens · replies up to ${HordeEngine.maxReply} tokens"
-            else "Big uncensored models on volunteers' GPUs. Nothing to sign up for. Not private: the volunteer running the model could read your messages.",
+            else "Big uncensored models on volunteers' GPUs (only ones that passed our no-refusal tests). Nothing to sign up for. Not private: the volunteer running the model could read your messages.",
             color = C.Muted, fontSize = 13.sp, fontFamily = if (on) FontFamily.Monospace else FontFamily.Default
         )
         vm.hordeMessage?.let { Text(it, color = C.Gold, fontSize = 13.sp) }
@@ -156,7 +156,7 @@ fun HordeEngineCard(vm: AppViewModel) {
                         Text("${"%.0f".format(m.billions)}B · ${m.workers} GPU${if (m.workers == 1) "" else "s"} · wait ~${m.eta}s · ${m.ctx / 1024}k context",
                             color = C.Muted, fontSize = 12.sp)
                     }
-                    Tag(if (m.name.lowercase().let { "heretic" in it || "abliterat" in it }) "abliterated" else "uncensored", C.Bg, C.Good)
+                    Tag("tested uncensored", C.Bg, C.Good)
                 }
             }
         }

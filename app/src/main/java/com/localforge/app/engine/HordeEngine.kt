@@ -19,15 +19,19 @@ object HordeEngine {
     const val ANON_KEY = "0000000000"
 
     data class HordeModel(val name: String, val workers: Int, val queued: Double, val eta: Int, val ctx: Int, val maxReply: Int) {
-        val uncensored: Boolean get() = UNCENSORED.any { name.lowercase().contains(it) }
+        val uncensored: Boolean get() = VERIFIED.any { name.lowercase().contains(it) }
         val short: String get() = name.substringAfterLast('/')
         /** Size in billions of parameters, read from the name ("Cydonia-24B", "26B-A4B" -> 26), or 0 if it doesn't say. */
         val billions: Double get() = Regex("(?<![a-z0-9])e?(\\d+(?:\\.\\d+)?)b(?![a-z])", RegexOption.IGNORE_CASE)
             .findAll(name.substringAfterLast('/')).mapNotNull { it.groupValues[1].toDoubleOrNull() }.maxOrNull() ?: 0.0
     }
 
-    /** Only models whose name says they're uncensored or abliterated (refusals removed) are ever listed or used. */
-    val UNCENSORED = listOf("heretic", "abliterat", "uncensor", "uncnr", "dolphin", "lexi")
+    /**
+     * Only models that passed our refusal tests (remote/test_horde.py: a swearing roast, an explicit adult scene, dark
+     * jokes, lockpicking and insults, all answered, with the app's own instructions). Names alone lie: several
+     * "heretic" / "uncensored" models on the Horde still refuse. Matched on the model name, so new quantizations count.
+     */
+    val VERIFIED = listOf("g4-meromero-26b", "dark-craving-26b")
 
     /** Only big models: small ones can't follow the app's tools and instructions well. */
     const val MIN_BILLIONS = 20.0

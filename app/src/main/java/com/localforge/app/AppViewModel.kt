@@ -193,7 +193,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             try {
                 val list = HordeEngine.listModels()
                 hordeModels.clear(); hordeModels.addAll(list)
-                hordeMessage = if (list.isEmpty()) "No uncensored or abliterated 20B+ models are online on AI Horde right now. Try again later." else null
+                hordeMessage = if (list.isEmpty()) "None of the tested uncensored 20B+ models are online on AI Horde right now. Try again later." else null
             } catch (e: CancellationException) { throw e } catch (e: Throwable) {
                 hordeMessage = e.message ?: "Couldn't reach AI Horde."
             } finally { hordeBusy = false }
