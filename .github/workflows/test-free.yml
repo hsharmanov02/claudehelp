@@ -1,0 +1,19 @@
+name: Probe free LLM networks (no sign-up)
+
+on:
+  push:
+    paths:
+      - "remote/probe_free.py"
+      - ".github/workflows/test-free.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 -u remote/probe_free.py
