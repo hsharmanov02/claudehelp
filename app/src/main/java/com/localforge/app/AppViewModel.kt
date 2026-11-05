@@ -193,7 +193,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             try {
                 val list = HordeEngine.listModels()
                 hordeModels.clear(); hordeModels.addAll(list)
-                hordeMessage = if (list.isEmpty()) "No text models are online on AI Horde right now." else null
+                hordeMessage = if (list.isEmpty()) "No uncensored or abliterated models are online on AI Horde right now. Try again later." else null
             } catch (e: CancellationException) { throw e } catch (e: Throwable) {
                 hordeMessage = e.message ?: "Couldn't reach AI Horde."
             } finally { hordeBusy = false }
@@ -1704,6 +1704,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     init {
         WebBrowser.init(app)
         HordeEngine.onStatus = { msg -> viewModelScope.launch { hordeMessage = msg; if (msg != null) engineMessage = msg } }
+        if (useHorde && HordeEngine.UNCENSORED.none { (prefs.getString("hordeModel", "") ?: "").lowercase().contains(it) }) {
+            useHorde = false; prefs.edit().putBoolean("useHorde", false).apply()
+        }
         if (useHorde && !prefs.getString("hordeModel", "").isNullOrBlank()) {
             HordeEngine.configure(prefs.getString("hordeModel", "")!!, hordeKey, prefs.getInt("hordeCtx", 4096), prefs.getInt("hordeReply", 512))
             HordeEngine.ready = true

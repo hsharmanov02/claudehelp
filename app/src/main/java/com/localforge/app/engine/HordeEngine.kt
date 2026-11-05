@@ -23,9 +23,8 @@ object HordeEngine {
         val short: String get() = name.substringAfterLast('/')
     }
 
-    /** Name hints for models tuned to not refuse. */
-    val UNCENSORED = listOf("heretic", "abliterat", "uncensor", "uncnr", "stheno", "dark", "rocinante", "magnum", "behemoth",
-        "cydonia", "lexi", "dolphin", "hermes", "mythomax", "tiefighter", "fimbulvetr", "lumimaid")
+    /** Only models whose name says they're uncensored or abliterated (refusals removed) are ever listed or used. */
+    val UNCENSORED = listOf("heretic", "abliterat", "uncensor", "uncnr", "dolphin", "lexi")
 
     @Volatile var model: String = ""
         private set
@@ -94,12 +93,13 @@ object HordeEngine {
             val n = it.getString("name")
             val (c, r) = limits[n] ?: (4096 to 512)
             HordeModel(n, it.optInt("count"), it.optDouble("queued"), it.optInt("eta"), c.takeIf { v -> v > 0 } ?: 4096, r.takeIf { v -> v > 0 } ?: 512)
-        }.filter { it.workers > 0 }
-            .sortedWith(compareByDescending<HordeModel> { it.uncensored }.thenByDescending { it.workers }.thenBy { it.eta })
+        }.filter { it.workers > 0 && it.uncensored }
+            .sortedWith(compareByDescending<HordeModel> { it.workers }.thenBy { it.eta })
     }
 
     /** Uses [m] for every chat from now on. */
     fun use(m: HordeModel, k: String) {
+        require(m.uncensored) { "LocalForge only uses uncensored or abliterated models." }
         configure(m.name, k, minOf(m.ctx, 32768), minOf(m.maxReply, 4096))
         ready = true
     }
