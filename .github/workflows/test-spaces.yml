@@ -5,9 +5,7 @@ on:
   push:
     paths:
       - "remote/try_space.py"
-      - "remote/raw_space.py"
-      - "remote/scan_spaces.py"
-      - "remote/scan_big.py"
+      - "remote/probe_docker.py"
       - ".github/workflows/test-spaces.yml"
   workflow_dispatch:
 
@@ -18,6 +16,16 @@ jobs:
   try:
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        space: ["hacktogone/uncensored-chat", "cereeenn120/CharacterChatBot"]
     steps:
       - uses: actions/checkout@v4
-      - run: python3 -u remote/scan_big.py
+      - run: python3 -u remote/try_space.py "${{ matrix.space }}" /respond
+  docker:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 -u remote/probe_docker.py https://akra35567-akira.hf.space https://fecuoy-fecuoy-ai-mistral-small-24b-instruct-2501-2bccc89.hf.space https://1egyb-ai-app.hf.space
