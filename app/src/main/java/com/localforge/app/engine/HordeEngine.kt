@@ -25,7 +25,7 @@ object HordeEngine {
 
     /** Name hints for models tuned to not refuse. */
     val UNCENSORED = listOf("heretic", "abliterat", "uncensor", "uncnr", "stheno", "dark", "rocinante", "magnum", "behemoth",
-        "cydonia", "lexi", "dolphin", "hermes", "mythomax", "tiefighter", "fimbulvetr", "lumimaid", "wicked")
+        "cydonia", "lexi", "dolphin", "hermes", "mythomax", "tiefighter", "fimbulvetr", "lumimaid")
 
     @Volatile var model: String = ""
         private set
