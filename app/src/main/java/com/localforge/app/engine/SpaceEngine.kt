@@ -15,12 +15,22 @@ import java.net.URL
  * (the same one the Models tab uses) gives more. Two copies of the Space are tried in turn.
  */
 object SpaceEngine {
-    const val MODEL = "Huihui Gemma 4 31B abliterated"
-    val HOSTS = listOf(
-        "https://mxderncultxre-gemma4-31b-uncensored-assistant.hf.space",
-        "https://jickman125-gemma4-31b-uncensored-assistant.hf.space",
+    /** A public Space and how to talk to it. Biggest first: the next one is tried when one is out of free GPU time. */
+    data class Space(val model: String, val host: String, val api: String, val kind: Kind)
+    enum class Kind { HAUHAU, GEMMA }
+
+    val SPACES = listOf(
+        // Qwen3.6 35B-A3B Uncensored (HauhauCS Aggressive): the biggest uncensored model that works with no account.
+        Space("Qwen3.6 35B Uncensored", "https://kivilaid-qwen3-6-35b-a3b-uncensored-hauhaucs-agg-1140346.hf.space", "/respond", Kind.HAUHAU),
+        Space("Huihui Gemma 4 31B abliterated", "https://mxderncultxre-gemma4-31b-uncensored-assistant.hf.space", "/chat", Kind.GEMMA),
+        Space("Huihui Gemma 4 31B abliterated", "https://jickman125-gemma4-31b-uncensored-assistant.hf.space", "/chat", Kind.GEMMA),
     )
+    const val MODEL = "Qwen3.6 35B Uncensored"
+    val HOSTS = SPACES.map { it.host }
     const val CTX = 32768
+    /** The model that wrote the last reply. */
+    @Volatile var lastModel: String = MODEL
+        private set
 
     @Volatile var ready = false
     @Volatile var token: String = ""
@@ -51,12 +61,13 @@ object SpaceEngine {
         (if (c.responseCode in 200..299) c.inputStream else (c.errorStream ?: c.inputStream)).bufferedReader().use { it.readText() }
 
     /** The /chat endpoint's parameter names and defaults, in order (read once per host). */
-    private fun paramsFor(host: String): List<Pair<String, Any?>> = params.getOrPut(host) {
+    private fun paramsFor(sp: Space): List<Pair<String, Any?>> = params.getOrPut(sp.host) {
+        val host = sp.host
         val c = open("$host/gradio_api/info")
         val code = c.responseCode
         val body = text(c); c.disconnect()
         if (code !in 200..299) throw IOException("HTTP $code")
-        val arr = JSONObject(body).getJSONObject("named_endpoints").getJSONObject("/chat").getJSONArray("parameters")
+        val arr = JSONObject(body).getJSONObject("named_endpoints").getJSONObject(sp.api).getJSONArray("parameters")
         (0 until arr.length()).map { arr.getJSONObject(it) }.map { p ->
             p.getString("parameter_name") to (if (p.has("parameter_default") && !p.isNull("parameter_default")) p.get("parameter_default") else null)
         }
@@ -65,9 +76,9 @@ object SpaceEngine {
     /** Checks a Space answers (it may need a minute to wake up). */
     suspend fun connect(): Boolean = withContext(Dispatchers.IO) {
         var last: Exception? = null
-        for (i in HOSTS.indices) {
-            val host = HOSTS[(hostIndex + i) % HOSTS.size]
-            try { paramsFor(host); hostIndex = (hostIndex + i) % HOSTS.size; ready = true; return@withContext true }
+        for (i in SPACES.indices) {
+            val sp = SPACES[(hostIndex + i) % SPACES.size]
+            try { paramsFor(sp); hostIndex = (hostIndex + i) % SPACES.size; ready = true; return@withContext true }
             catch (e: Exception) { last = e }
         }
         throw IllegalStateException("Couldn't reach the Hugging Face Space (${last?.message}).")
@@ -100,16 +111,16 @@ object SpaceEngine {
             "system_prompt" to system.ifBlank { null },
         )
         var lastError = ""
-        for (attempt in HOSTS.indices) {
+        // Always start with the biggest model; fall back down the list when its free GPU time is used up.
+        for (sp in SPACES) {
             if (stopped) return@withContext ""
-            val host = HOSTS[(hostIndex + attempt) % HOSTS.size]
             try {
-                val out = runOn(host, values, onText)
-                hostIndex = (hostIndex + attempt) % HOSTS.size
+                val out = runOn(sp, values, history, onText)
+                lastModel = sp.model
                 return@withContext out
             } catch (e: Quota) {
                 lastError = e.message ?: ""
-                onStatus("This copy of the Space hit Hugging Face's free GPU limit, trying the other one…")
+                onStatus("${sp.model} is out of free GPU time for now, trying the next model…")
             } catch (e: IOException) {
                 if (stopped) return@withContext ""
                 lastError = e.message ?: e.javaClass.simpleName
@@ -125,16 +136,35 @@ object SpaceEngine {
         throw IllegalStateException("The Hugging Face Space didn't answer ($lastError).")
     }
 
-    private fun runOn(host: String, values: Map<String, Any?>, onText: (String) -> Unit): String {
+    private fun runOn(sp: Space, values: Map<String, Any?>, history: JSONArray, onText: (String) -> Unit): String {
+        val host = sp.host
         val data = JSONArray()
-        paramsFor(host).forEach { (name, def) -> data.put(if (values.containsKey(name)) (values[name] ?: JSONObject.NULL) else (def ?: JSONObject.NULL)) }
-        val start = open("$host/gradio_api/call/chat", JSONObject().put("data", data))
+        when (sp.kind) {
+            Kind.GEMMA -> paramsFor(sp).forEach { (name, def) ->
+                data.put(if (values.containsKey(name)) (values[name] ?: JSONObject.NULL) else (def ?: JSONObject.NULL))
+            }
+            Kind.HAUHAU -> {
+                // message, history (content as text parts), system prompt, skills, custom skills, tools, effort,
+                // temperature, max tokens, and one more hidden input the handler expects.
+                val h = JSONArray()
+                for (i in 0 until history.length()) {
+                    val m = history.getJSONObject(i)
+                    h.put(JSONObject().put("role", m.getString("role"))
+                        .put("content", JSONArray().put(JSONObject().put("type", "text").put("text", m.getString("content")))))
+                }
+                val sys = ((values["system_prompt"] as? String) ?: "") +
+                    "\n\nDo not write out your reasoning or drafts. Reply immediately with the final answer only."
+                data.put(values["text"]).put(h).put(sys).put(JSONArray()).put(JSONObject.NULL).put(false).put("low")
+                    .put(values["temperature"]).put(values["max_new_tokens"]).put(JSONObject.NULL)
+            }
+        }
+        val start = open("$host/gradio_api/call${sp.api}", JSONObject().put("data", data))
         val code = start.responseCode
         val body = text(start); start.disconnect()
         if (code !in 200..299) throw IOException("HTTP $code ${body.take(200)}")
         val id = JSONObject(body).getString("event_id")
-        onStatus("Gemma 31B is writing (free Hugging Face GPU)…")
-        val c = open("$host/gradio_api/call/chat/$id", readMs = 5 * 60_000)
+        onStatus("${sp.model} is writing (free Hugging Face GPU)…")
+        val c = open("$host/gradio_api/call${sp.api}/$id", readMs = 5 * 60_000)
         conn = c
         val t0 = System.nanoTime()
         var sent = ""
@@ -151,6 +181,19 @@ object SpaceEngine {
                         throw if (payload.contains("ZeroGPU", true) || payload.contains("quota", true)) Quota(payload) else IOException(payload.take(300))
                     }
                     if (event != "generating" && event != "complete") continue
+                    if (sp.kind == Kind.HAUHAU) {
+                        // Its reasoning streams first and is folded away at the end, so only the final answer is sent.
+                        if (payload.contains("ZeroGPU", true) && payload.contains("quota", true)) throw Quota(payload.take(300))
+                        if (event != "complete") continue
+                        val chat = try { JSONArray(payload).optJSONArray(0) } catch (_: Exception) { null }
+                        val last = chat?.optJSONObject(chat.length() - 1)
+                        var answer = last?.optJSONArray("content")?.optJSONObject(0)?.optString("text")
+                            ?: last?.optString("content").orEmpty()
+                        if (answer.contains("</details>")) answer = answer.substringAfterLast("</details>")
+                        answer = answer.replace(Regex("<div class='gen-status'>[\\s\\S]*?</div>"), "").trim()
+                        if (answer.isNotEmpty()) { onText(answer); sent = answer }
+                        break
+                    }
                     val o = try { JSONArray(payload).opt(0) } catch (_: Exception) { null }
                     val obj = o as? JSONObject
                     val err = obj?.optString("error").orEmpty()

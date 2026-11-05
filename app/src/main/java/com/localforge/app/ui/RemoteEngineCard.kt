@@ -169,11 +169,12 @@ fun SpaceEngineCard(vm: AppViewModel) {
     val on = vm.useSpace && Engine.isSpace
     Panel(borderColor = if (on) C.Good else C.Border) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Box(Modifier.weight(1f)) { StatusDot(on, if (on) "Gemma 31B abliterated on" else "Gemma 31B abliterated (free)") }
+            Box(Modifier.weight(1f)) { StatusDot(on, if (on) "Uncensored 35B on (free)" else "Uncensored 35B (free, no account)") }
             Tag("tested uncensored", C.Bg, C.Good)
         }
         Text(
-            "Huihui Gemma 4 31B abliterated v2 on a free Hugging Face GPU. No account needed. Passed every refusal test. " +
+            "Qwen3.6 35B Uncensored, the biggest uncensored model that works with no account, on a free Hugging Face GPU. " +
+                "When its free GPU time runs out it switches to Huihui Gemma 4 31B abliterated. Both passed every refusal test. " +
                 "Hugging Face limits free GPU use: without an account it's a few replies at a time" +
                 (if (vm.hfToken.isBlank()) "; a free Hugging Face token (Models tab) gives more." else ". Your Hugging Face token is used for more."),
             color = C.Muted, fontSize = 13.sp
