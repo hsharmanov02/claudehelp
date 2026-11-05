@@ -1,0 +1,22 @@
+name: Test AI Horde (no sign-up)
+
+on:
+  push:
+    paths:
+      - "remote/test_horde.py"
+      - ".github/workflows/test-horde.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Try AI Horde anonymously
+        run: python3 remote/test_horde.py
+      - name: How fast is a GitHub runner itself? (CPU, 16 GB RAM)
+        run: nproc; free -g; lscpu | grep -E "Model name|Flags" | cut -c1-120
