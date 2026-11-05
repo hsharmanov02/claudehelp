@@ -12,7 +12,7 @@ import java.net.URL
  * Huihui Gemma 4 31B abliterated v2 on public Hugging Face Spaces (free GPUs, no account), reached through
  * Gradio's plain HTTP API. It passed every refusal test (remote/test_space.py, remote/probe_free.py). Hugging Face
  * limits free GPU runs per person: without an account it's a few replies at a time; a free Hugging Face token
- * (the same one the Models tab uses) gives more. Two copies of the Space are tried in turn.
+ * (set in Home > Runtime settings) gives more. Two copies of the Space are tried in turn.
  */
 object SpaceEngine {
     /** A public Space and how to talk to it. Biggest first: the next one is tried when one is out of free GPU time. */
@@ -129,7 +129,7 @@ object SpaceEngine {
         onStatus(null)
         if (lastError.contains("ZeroGPU", true) || lastError.contains("quota", true)) {
             throw IllegalStateException(
-                "Hugging Face's free GPU limit is used up for now. Paste a free Hugging Face token in the Models tab " +
+                "Hugging Face's free GPU limit is used up for now. Paste your free Hugging Face token into the Uncensored 35B card " +
                     "for more replies, or wait a while and try again."
             )
         }

@@ -176,10 +176,17 @@ fun SpaceEngineCard(vm: AppViewModel) {
             "Qwen3.6 35B Uncensored, the biggest uncensored model that works with no account, on a free Hugging Face GPU. " +
                 "When its free GPU time runs out it switches to Huihui Gemma 4 31B abliterated. Both passed every refusal test. " +
                 "Hugging Face limits free GPU use: without an account it's a few replies at a time" +
-                (if (vm.hfToken.isBlank()) "; a free Hugging Face token (Models tab) gives more." else ". Your Hugging Face token is used for more."),
+                (if (vm.hfToken.isBlank()) "; a free Hugging Face token (below) gives more." else ". Your Hugging Face token is used for more."),
             color = C.Muted, fontSize = 13.sp
         )
         vm.spaceMessage?.let { Text(it, color = C.Gold, fontSize = 13.sp) }
+        Spacer(Modifier.height(8.dp))
+        var tok by remember { mutableStateOf(vm.hfToken) }
+        OutlinedTextField(
+            value = tok, onValueChange = { tok = it; vm.updateHfToken(it) }, singleLine = true,
+            modifier = Modifier.fillMaxWidth(), visualTransformation = PasswordVisualTransformation(),
+            label = { Text("Hugging Face token (hf_…) for more free replies") }
+        )
         Spacer(Modifier.height(8.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             if (on) {
