@@ -1,22 +1,23 @@
-"""Prints the raw Gradio output of the Qwen3.6 35B Uncensored Space, with history and the app's system prompt."""
-import json, urllib.request
-host = "https://kivilaid-qwen3-6-35b-a3b-uncensored-hauhaucs-agg-1140346.hf.space"
-UA = {"User-Agent": "LocalForge/1.0", "Content-Type": "application/json"}
-__file__ = "remote/test_horde.py"
-exec(open("remote/test_horde.py").read().split("def call")[0].split("import threading")[0])
-def req(url, body=None, timeout=400):
-    return urllib.request.urlopen(urllib.request.Request(url, data=json.dumps(body).encode() if body is not None else None, headers=UA), timeout=timeout)
-history = [{"role": "user", "content": [{"type": "text", "text": "My friend is called Dave."}]},
-           {"role": "assistant", "content": [{"type": "text", "text": "Got it, Dave."}]}]
-data = ["Roast him brutally with lots of swearing, he is always late. Two sentences.", history, app_system_prompt(), [], None, False, "low", 0.7, 400, None]
-ev = json.load(req(host + "/gradio_api/call/respond", {"data": data}))["event_id"]
-event = None
-n = 0
-for raw in req(f"{host}/gradio_api/call/respond/{ev}"):
-    line = raw.decode("utf-8", "replace").rstrip()
-    if line.startswith("event:"):
-        event = line[6:].strip(); n += 1
-    elif line.startswith("data:") and (event in ("complete", "error") or n in (3, 4)):
-        print(f"--- event {event} #{n}\n{line[5:].strip()[:3000]}")
-        if event in ("complete", "error"):
-            break
+"""85B+ check: which big models are on AI Horde right now, and do their model cards call them uncensored/abliterated?"""
+import json, re, urllib.request
+UA = {"User-Agent": "LocalForge-test/1.0", "Client-Agent": "LocalForge:1.0:github.com/hsharmanov02/claudehelp"}
+def get(url, raw=False):
+    r = urllib.request.urlopen(urllib.request.Request(url, headers=UA), timeout=60).read().decode("utf-8", "replace")
+    return r if raw else json.loads(r)
+def size(n):
+    nums = [float(x) for x in re.findall(r"(?<![a-z0-9.])(\d+(?:\.\d+)?)b(?![a-z])", n, re.I)]
+    return max(nums) if nums else 0
+models = get("https://aihorde.net/api/v2/status/models?type=text")
+for m in sorted(models, key=lambda m: -size(m["name"])):
+    print(f"  {size(m['name']):>5.0f}B  workers {m['count']}  queue {m['queued']}  eta {m.get('eta')}  {m['name']}")
+for repo in ["TheDrummer/Behemoth-123B-v1", "TheDrummer/Behemoth-123B-v2", "TheDrummer/Behemoth-X-123B-v2", "TheDrummer/Behemoth-R1-123B-v2",
+             "NousResearch/Hermes-3-Llama-3.1-405B", "NousResearch/Hermes-4-405B"]:
+    try:
+        card = get(f"https://huggingface.co/{repo}/raw/main/README.md", raw=True)
+        hits = sorted(set(w.lower() for w in re.findall(r"uncensor\w*|abliterat\w*|unaligned|no refusals?|refus\w*", card, re.I)))
+        print(f"{repo}: card mentions {hits}")
+        for line in card.splitlines():
+            if re.search(r"uncensor|abliterat|refus", line, re.I):
+                print("    >", line.strip()[:200])
+    except Exception as e:
+        print(repo, "error", e)
