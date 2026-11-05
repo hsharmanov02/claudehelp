@@ -12,11 +12,8 @@ android {
     compileSdk = 36
 
     defaultConfig {
-        applicationId = "com.localforge.app"
         minSdk = 30
         targetSdk = 36
-        versionCode = 10
-        versionName = "1.8.2"
 
         ndk {
             abiFilters += listOf("arm64-v8a")
@@ -26,6 +23,28 @@ android {
                 arguments += listOf("-DCMAKE_BUILD_TYPE=Release", "-DANDROID_STL=c++_shared")
                 cppFlags += listOf("-O3")
             }
+        }
+    }
+
+    // Two apps from one code base: LocalForge (chat/code assistant) and LocalForge Autopilot (one main command, 24/7).
+    // They install side by side, keep their own chats and settings, and share the model files in /sdcard/LocalForge/models.
+    flavorDimensions += "app"
+    productFlavors {
+        create("forge") {
+            dimension = "app"
+            applicationId = "com.localforge.app"
+            versionCode = 11
+            versionName = "1.9.0"
+            buildConfigField("boolean", "AUTOPILOT", "false")
+            resValue("string", "app_name", "LocalForge")
+        }
+        create("autopilot") {
+            dimension = "app"
+            applicationId = "com.localforge.autopilot"
+            versionCode = 1
+            versionName = "1.0.0"
+            buildConfigField("boolean", "AUTOPILOT", "true")
+            resValue("string", "app_name", "LocalForge Autopilot")
         }
     }
 
@@ -60,6 +79,7 @@ android {
 
     buildFeatures {
         compose = true
+        buildConfig = true
     }
 
     packaging {
@@ -93,4 +113,5 @@ dependencies {
     implementation("androidx.compose.material:material-icons-extended")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
     implementation("androidx.webkit:webkit:1.12.1")
+    testImplementation("junit:junit:4.13.2")
 }

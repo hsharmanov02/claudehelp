@@ -1,0 +1,93 @@
+name: Test remote engine (CPU)
+
+# Runs the remote engine's llama.cpp server with the same flags as remote/modal_engine.py, on a normal
+# GitHub machine (CPU, small abliterated model), and checks it the way the phone apps use it.
+on:
+  push:
+    paths:
+      - "remote/**"
+      - ".github/workflows/test-remote-engine.yml"
+  workflow_dispatch:
+    inputs:
+      repo:
+        description: "Small abliterated GGUF repo to test with"
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Find abliterated GGUF repos on Hugging Face
+        run: |
+          python3 - <<'PY'
+          import json, urllib.request
+          for q in ["Qwen3-14B-abliterated-GGUF", "Qwen3-8B-abliterated-GGUF", "Qwen3-4B-abliterated-GGUF", "Qwen3-1.7B-abliterated-GGUF", "Qwen3-30B-A3B-abliterated-GGUF"]:
+              url = "https://huggingface.co/api/models?search=" + q + "&sort=downloads&limit=6"
+              rows = json.load(urllib.request.urlopen(url, timeout=60))
+              print(q, "->", ", ".join(f"{m['id']} ({m.get('downloads', 0)})" for m in rows) or "none")
+          PY
+
+      - name: Check the deploy default model resolves to a single GGUF file
+        run: |
+          pip install -q huggingface_hub modal
+          LOCALFORGE_KEY=x python3 -c "
+          import sys; sys.path.insert(0, 'remote')
+          import modal_engine as m
+          from huggingface_hub import HfApi
+          info = HfApi().model_info(m.MODEL_REPO, files_metadata=True)
+          name = m.pick_file([s.rfilename for s in info.siblings], m.QUANT)
+          size = next(s.size for s in info.siblings if s.rfilename == name)
+          print(f'default {m.MODEL_REPO} -> {name} ({size / 1e9:.1f} GB)')
+          assert size < 20e9, 'too big for a 24 GB GPU'"
+
+      - name: Pick the test model
+        id: model
+        run: |
+          python3 - "${{ github.event.inputs.repo }}" <<'PY' >> "$GITHUB_OUTPUT"
+          import json, sys, urllib.request
+          want = sys.argv[1].strip()
+          cands = [want] if want else []
+          for q in ["Qwen3-1.7B-abliterated-GGUF", "Qwen3-4B-abliterated-GGUF"]:
+              rows = json.load(urllib.request.urlopen("https://huggingface.co/api/models?search=" + q + "&sort=downloads&limit=10", timeout=60))
+              cands += [m["id"] for m in rows]
+          for repo in cands:
+              files = [s["rfilename"] for s in json.load(urllib.request.urlopen(f"https://huggingface.co/api/models/{repo}", timeout=60))["siblings"]]
+              g = sorted([f for f in files if f.lower().endswith(".gguf") and "q4_k_m" in f.lower() and "-of-0" not in f.lower()], key=len)
+              if g:
+                  print(f"repo={repo}"); print(f"file={g[0]}"); break
+          PY
+          cat "$GITHUB_OUTPUT"
+
+      - name: Download it
+        run: |
+          mkdir -p models
+          curl -fL --retry 5 -o "models/${{ steps.model.outputs.file }}" "https://huggingface.co/${{ steps.model.outputs.repo }}/resolve/main/${{ steps.model.outputs.file }}?download=true"
+          ls -la models
+
+      - name: Install the Modal SDK (needed to import the app file)
+        run: pip install -q modal
+
+      - name: Start llama.cpp server (same flags as on Modal, CPU build)
+        run: |
+          KEY=$(python3 -c 'import secrets; print(secrets.token_hex(16))')
+          echo "::add-mask::$KEY"
+          echo "KEY=$KEY" >> "$GITHUB_ENV"
+          ARGS=$(LOCALFORGE_KEY=x python3 -c "
+          import sys; sys.path.insert(0, 'remote')
+          import modal_engine as m
+          m.CTX = 4096
+          print(' '.join(m.server_args('/models/${{ steps.model.outputs.file }}', '$KEY', ngl=0)))")
+          docker run -d --name engine -p 8080:8080 -v "$PWD/models:/models" ghcr.io/ggml-org/llama.cpp:server $ARGS
+
+      - name: Check it like the phone app does
+        run: python3 remote/test_engine.py http://127.0.0.1:8080 "$KEY"
+
+      - name: Server log
+        if: always()
+        run: docker logs engine 2>&1 | tail -60

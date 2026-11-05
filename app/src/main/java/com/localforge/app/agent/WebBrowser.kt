@@ -94,6 +94,9 @@ object WebBrowser {
         ctx.baseContext = activity ?: appCtx
     }
 
+    /** The app's own storage, for files the browser saves when it has no all-files access. */
+    fun filesDir(): File = appCtx.getExternalFilesDir(null) ?: appCtx.filesDir
+
     val hasPage: Boolean get() = url.isNotBlank() && url != "about:blank"
 
     private fun script(name: String): String = scripts.getOrPut(name) {
@@ -159,7 +162,23 @@ object WebBrowser {
         }
     }
 
+    /** Every request the browser makes (pages, scripts, images, API calls), seen from the app side. */
+    data class SeenRequest(val time: Long, val method: String, val url: String, val headers: Map<String, String>, val mainFrame: Boolean, val page: String)
+    private val seen = ArrayDeque<SeenRequest>()
+
+    fun seenRequests(): List<SeenRequest> = synchronized(seen) { seen.toList() }
+
     private class Client : WebViewClient() {
+        override fun shouldInterceptRequest(view: WebView, request: WebResourceRequest): android.webkit.WebResourceResponse? {
+            // Only watches: returning null lets the WebView load everything itself, unchanged.
+            try {
+                val r = SeenRequest(System.currentTimeMillis(), request.method ?: "GET", request.url.toString().take(2000),
+                    request.requestHeaders ?: emptyMap(), request.isForMainFrame, url)
+                synchronized(seen) { seen.addLast(r); while (seen.size > 600) seen.removeFirst() }
+            } catch (_: Exception) {}
+            return null
+        }
+
         override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
             val u = request.url
             val scheme = (u.scheme ?: "").lowercase()
@@ -417,17 +436,8 @@ object WebBrowser {
         return if (exists) null else extractRows[n]
     }
 
-    /** The page's own calls to its backend (fetch/XHR) with the start of each response. */
-    suspend fun network(): String {
-        val arr = eval("window.__lfNet || []") as? JSONArray ?: JSONArray()
-        if (arr.length() == 0) return "This page hasn't made any backend API calls that LocalForge saw. Read it with <page/> or <extract/>."
-        val rows = (0 until arr.length()).map { arr.getJSONObject(it) }.sortedByDescending { it.optString("body").length }.take(12)
-        return "Backend API calls this page made (most data first; open one with <fetch url=\"...\"/> for the full response):\n" +
-            rows.joinToString("\n\n") { o ->
-                "${o.optString("method")} ${o.optString("url")} -> ${o.optInt("status")} ${o.optString("type")}" +
-                    (o.optString("body").takeIf { it.isNotBlank() }?.let { "\n" + it.take(700) } ?: "")
-            }.take(5000)
-    }
+    /** The page's own calls to its backend (fetch/XHR) with the start of each response. See [NetInspect] for the rest. */
+    suspend fun network(): String = NetInspect.summary()
 
     // ---------- acting on pages ----------
 

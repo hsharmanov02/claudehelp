@@ -27,7 +27,7 @@
         android:allowBackup="false"
         android:icon="@drawable/ic_launcher"
         android:roundIcon="@drawable/ic_launcher"
-        android:label="LocalForge"
+        android:label="@string/app_name"
         android:largeHeap="true"
         android:extractNativeLibs="true"
         android:theme="@style/Theme.LocalForge">

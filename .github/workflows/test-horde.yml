@@ -1,0 +1,21 @@
+name: Test AI Horde (no sign-up)
+
+# Tests every 20B+ model online on AI Horde for refusals, with the app's own system prompt.
+on:
+  push:
+    paths:
+      - "remote/test_horde.py"
+      - ".github/workflows/test-horde.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test the models
+        run: python3 -u remote/test_horde.py

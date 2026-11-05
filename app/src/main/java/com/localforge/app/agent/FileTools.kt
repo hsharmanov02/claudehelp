@@ -50,7 +50,14 @@ sealed class FileAction {
             "type" -> "Type \"${content.take(60)}\" into [$path]" + if (extra == "submit") " and press Enter" else ""
             "press" -> "Press $path on the page"
             "js" -> "Run a script on the page (${content.lines().size} lines)"
-            "network" -> "Read the page's backend API calls"
+            "network" -> when (path) {
+                "detail" -> "Inspect network request #$content"
+                "body" -> "Read the response of request #$content"
+                "all" -> "List every request the page made" + if (content.isNotBlank()) " (\"$content\")" else ""
+                "ws" -> "Read the page's WebSocket traffic"
+                "save" -> "Save the page's network traffic as a .har file"
+                else -> "Read the page's backend API calls"
+            }
             "mod" -> "Save a lasting edit to $path: ${extra.ifBlank { "${content.lines().size} lines of code" }}"
             else -> kind
         }

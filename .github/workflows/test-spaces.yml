@@ -1,0 +1,22 @@
+name: Test uncensored HF Spaces
+
+# One job per Space, so each gets its own machine (Hugging Face's free GPU quota is per visitor).
+on:
+  push:
+    paths:
+      - "remote/try_space.py"
+      - "remote/probe_docker.py"
+      - "remote/try_hacktogone.py"
+      - ".github/workflows/test-spaces.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  try:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 -u remote/try_hacktogone.py

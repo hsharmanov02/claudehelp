@@ -33,6 +33,9 @@ import com.localforge.app.data.LocalModel
 import com.localforge.app.data.ModelStore
 import com.localforge.app.engine.ChatMessage
 import com.localforge.app.engine.Engine
+import com.localforge.app.engine.HordeEngine
+import com.localforge.app.engine.SpaceEngine
+import com.localforge.app.engine.RemoteEngine
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -41,7 +44,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 
-enum class Tab { HOME, MODELS, CODE, BROWSER, FILES }
+enum class Tab { AUTOPILOT, HOME, MODELS, CODE, BROWSER, FILES }
 enum class Role { USER, ASSISTANT, TOOL, RUN, NOTE }
 enum class ActionStatus { PENDING, DONE, REJECTED }
 
@@ -73,7 +76,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     val store = ModelStore(app)
     private val main = Handler(Looper.getMainLooper())
 
-    var tab by mutableStateOf(Tab.HOME)
+    var tab by mutableStateOf(if (BuildConfig.AUTOPILOT) Tab.AUTOPILOT else Tab.HOME)
     var hasFileAccess by mutableStateOf(false)
         private set
 
@@ -90,10 +93,11 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         private set
     var hfToken by mutableStateOf(prefs.getString("hfToken", "") ?: "")
         private set
-    var browserAutoApprove by mutableStateOf(prefs.getBoolean("browserAutoApprove", false))
+    // The 24/7 Autopilot runs unattended, so there the AI may click and type without asking (deletes still ask).
+    var browserAutoApprove by mutableStateOf(prefs.getBoolean("browserAutoApprove", BuildConfig.AUTOPILOT))
         private set
     /** Lets thinking models reason before answering. Off by default: on a phone it can take many minutes. */
-    var thinkHarder by mutableStateOf(prefs.getBoolean("thinkHarder2", true))
+    var thinkHarder by mutableStateOf(prefs.getBoolean("thinkHarder2", !BuildConfig.AUTOPILOT))
         private set
     fun updateThinkHarder(v: Boolean) { thinkHarder = v; prefs.edit().putBoolean("thinkHarder2", v).apply() }
 
@@ -103,9 +107,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     var stepNumber by mutableStateOf(0)
         private set
     /** Longest one reply may take, and how long a whole request may keep using tools, before the app steps in. */
-    private val replyLimitMs get() = if (thinkHarder) 5 * 60_000L else 3 * 60_000L
+    // The Autopilot runs unattended, so a slow phone may take its time: nobody is waiting for the reply.
+    private val replyLimitMs get() = if (BuildConfig.AUTOPILOT) 20 * 60_000L else if (thinkHarder) 5 * 60_000L else 3 * 60_000L
     /** Whole request: after this long the app forces the model to answer with what it has, then ends the turn. */
-    private val requestLimitMs get() = if (thinkHarder) 12 * 60_000L else 7 * 60_000L
+    private val requestLimitMs get() = if (BuildConfig.AUTOPILOT) 45 * 60_000L else if (thinkHarder) 12 * 60_000L else 7 * 60_000L
     /** Thinking budget: after this much hidden thinking the model must stop thinking and act. */
     private val thinkTokenBudget = 600
     private val thinkTimeBudgetMs = 2 * 60_000L
@@ -125,7 +130,183 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun updateMaxTokens(v: Int) { maxTokens = v; prefs.edit().putInt("maxTokens", v).apply() }
     fun updateAutoApprove(v: Boolean) { autoApprove = v; prefs.edit().putBoolean("autoApprove", v).apply() }
     fun updateBrowserAutoApprove(v: Boolean) { browserAutoApprove = v; prefs.edit().putBoolean("browserAutoApprove", v).apply() }
-    fun updateHfToken(v: String) { hfToken = v.trim(); prefs.edit().putString("hfToken", hfToken).apply() }
+    // ---- Remote engine: your own model on a rented GPU (remote/modal_engine.py) ----
+    var useRemote by mutableStateOf(prefs.getBoolean("useRemote", false))
+        private set
+    var remoteUrl by mutableStateOf(prefs.getString("remoteUrl", "") ?: "")
+        private set
+    var remoteKey by mutableStateOf(prefs.getString("remoteKey", "") ?: "")
+        private set
+    var remoteBusy by mutableStateOf(false)
+        private set
+
+    private fun remoteName() = "☁ " + RemoteEngine.model.ifBlank { "remote model" }
+
+    /** Checks the address and key (waking the GPU if needed) and uses the remote model for every chat. */
+    fun connectRemote(url: String, key: String) {
+        if (remoteBusy) return
+        remoteBusy = true
+        viewModelScope.launch { stopReplyForSwitch(); connectRemoteNow(url, key); remoteBusy = false }
+    }
+
+    private suspend fun connectRemoteNow(url: String, key: String): Boolean {
+        remoteUrl = url.trim().trimEnd('/'); remoteKey = key.trim()
+        prefs.edit().putString("remoteUrl", remoteUrl).putString("remoteKey", remoteKey).apply()
+        engineMessage = "Connecting to the remote engine (a sleeping GPU takes a minute or two to wake)…"
+        RemoteEngine.ready = false
+        RemoteEngine.configure(remoteUrl, remoteKey)
+        return try {
+            if (useHorde) stopHorde()
+            if (useSpace) stopSpace()
+            if (Engine.isLoaded) Engine.unload()
+            val name = RemoteEngine.connect()
+            useRemote = true
+            prefs.edit().putBoolean("useRemote", true).putString("remoteModel", name).putInt("remoteCtx", RemoteEngine.ctx).apply()
+            loadedModel = remoteName()
+            engineMessage = "Remote engine ready: $name (${RemoteEngine.ctx} tokens of context)"
+            true
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            RemoteEngine.ready = false
+            loadedModel = null
+            engineMessage = e.message ?: "Couldn't reach the remote engine."
+            false
+        }
+    }
+
+    // ---- AI Horde: free volunteer GPUs, no account (prompts aren't private) ----
+    var useHorde by mutableStateOf(prefs.getBoolean("useHorde", false))
+        private set
+    var hordeKey by mutableStateOf(prefs.getString("hordeKey", "") ?: "")
+        private set
+    val hordeModels = mutableStateListOf<HordeEngine.HordeModel>()
+    var hordeBusy by mutableStateOf(false)
+        private set
+    var hordeMessage by mutableStateOf<String?>(null)
+        private set
+
+    /** Reads which models AI Horde's volunteers are serving right now. */
+    fun fetchHordeModels() {
+        if (hordeBusy) return
+        hordeBusy = true
+        hordeMessage = "Asking AI Horde which models are online…"
+        viewModelScope.launch {
+            try {
+                val list = HordeEngine.listModels()
+                hordeModels.clear(); hordeModels.addAll(list)
+                hordeMessage = if (list.isEmpty()) "None of the tested uncensored 20B+ models are online on AI Horde right now. Try again later." else null
+            } catch (e: CancellationException) { throw e } catch (e: Throwable) {
+                hordeMessage = e.message ?: "Couldn't reach AI Horde."
+            } finally { hordeBusy = false }
+        }
+    }
+
+    /** Uses [m] on AI Horde for every chat (and the Autopilot). */
+    fun useHordeModel(m: HordeEngine.HordeModel, key: String) {
+        if (hordeBusy) return
+        hordeBusy = true
+        hordeMessage = "Switching to ${m.short}…"
+        viewModelScope.launch {
+            try { switchToHorde(m, key) } finally { hordeBusy = false }
+        }
+    }
+
+    /** Stops a reply that's still being written (e.g. an Autopilot round on the phone's model), so the engine can change. */
+    private suspend fun stopReplyForSwitch() {
+        if (!generating) return
+        stopGenerating()
+        val until = System.currentTimeMillis() + 20_000
+        while (generating && System.currentTimeMillis() < until) delay(200)
+    }
+
+    private suspend fun switchToHorde(m: HordeEngine.HordeModel, key: String) {
+        run {
+            stopReplyForSwitch()
+            if (useRemote) disconnectRemote()
+            if (useSpace) stopSpace()
+            if (Engine.isLoaded && !Engine.isHorde) Engine.unload()
+            hordeKey = key.trim()
+            HordeEngine.use(m, hordeKey)
+            useHorde = true
+            prefs.edit().putBoolean("useHorde", true).putString("hordeKey", hordeKey).putString("hordeModel", m.name)
+                .putInt("hordeCtx", HordeEngine.ctx).putInt("hordeReply", HordeEngine.maxReply).apply()
+            loadedModel = "🌐 " + m.short
+            engineMessage = "Using ${m.short} on AI Horde (${HordeEngine.ctx} tokens of context)"
+            hordeMessage = "Ready: every chat now uses ${m.short}."
+        }
+    }
+
+    // ---- Uncensored Gemma 31B on a public Hugging Face Space (free, no account; a free HF token gives more replies) ----
+    var useSpace by mutableStateOf(prefs.getBoolean("useSpace", false))
+        private set
+    var spaceBusy by mutableStateOf(false)
+        private set
+    var spaceMessage by mutableStateOf<String?>(null)
+        private set
+
+    fun useSpaceEngine() {
+        if (spaceBusy) return
+        spaceBusy = true
+        spaceMessage = "Connecting to the Hugging Face Space (it can take a minute to wake up)…"
+        viewModelScope.launch {
+            try {
+                stopReplyForSwitch()
+                if (useRemote) disconnectRemote()
+                if (useHorde) stopHorde()
+                if (Engine.isLoaded && !Engine.isSpace) Engine.unload()
+                SpaceEngine.token = hfToken
+                SpaceEngine.connect()
+                useSpace = true
+                prefs.edit().putBoolean("useSpace", true).apply()
+                loadedModel = "🤗 " + SpaceEngine.MODEL
+                engineMessage = "Using ${SpaceEngine.MODEL} on Hugging Face (free)"
+                spaceMessage = "Ready: every chat now uses ${SpaceEngine.MODEL}." +
+                    if (hfToken.isBlank()) " Without a Hugging Face token you get a few replies at a time." else ""
+            } catch (e: CancellationException) { throw e } catch (e: Throwable) {
+                SpaceEngine.ready = false
+                spaceMessage = e.message ?: "Couldn't reach the Hugging Face Space."
+            } finally { spaceBusy = false }
+        }
+    }
+
+    fun stopSpace() {
+        SpaceEngine.stop()
+        SpaceEngine.ready = false
+        useSpace = false
+        prefs.edit().putBoolean("useSpace", false).apply()
+        if (loadedModel?.startsWith("🤗") == true) loadedModel = null
+        spaceMessage = null
+    }
+
+    fun stopHorde() {
+        HordeEngine.stop()
+        HordeEngine.ready = false
+        useHorde = false
+        prefs.edit().putBoolean("useHorde", false).apply()
+        if (loadedModel?.startsWith("🌐") == true) loadedModel = null
+    }
+
+    /** Back to models on the phone. The remote GPU scales down by itself. */
+    fun disconnectRemote() {
+        RemoteEngine.stop()
+        RemoteEngine.ready = false
+        useRemote = false
+        prefs.edit().putBoolean("useRemote", false).apply()
+        if (loadedModel?.startsWith("☁") == true) loadedModel = null
+        engineMessage = "Remote engine off: chats use models on this phone again."
+    }
+
+    private suspend fun wakeRemote() {
+        if (!Engine.isRemote || !RemoteEngine.asleep()) return
+        loading = true
+        engineMessage = "Waking the remote GPU (a minute or two after a quiet spell)…"
+        RemoteEngine.clearStop()
+        try { RemoteEngine.waitReady(); engineMessage = "Remote engine ready: ${RemoteEngine.model}" }
+        finally { loading = false }
+    }
+
+    fun updateHfToken(v: String) { hfToken = v.trim(); SpaceEngine.token = hfToken; prefs.edit().putString("hfToken", hfToken).apply() }
 
     // Phones have 4 fast cores at most; using the slow ones too makes generation slower, not faster.
     private fun defaultThreads(): Int = Runtime.getRuntime().availableProcessors().coerceAtMost(4).coerceAtLeast(2)
@@ -165,6 +346,27 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         hasFileAccess = Environment.isExternalStorageManager()
         if (hasFileAccess && entries.isEmpty()) refreshFiles()
         if (hasFileAccess) viewModelScope.launch { try { FileIndex.ensureFresh() } catch (_: Exception) {} }
+        if (hasFileAccess) shareModels()
+    }
+
+    private var sharing = false
+
+    /** Puts models in /sdcard/LocalForge/models so LocalForge and LocalForge Autopilot both use the same files. */
+    private fun shareModels() {
+        if (sharing) return
+        sharing = true
+        viewModelScope.launch {
+            try {
+                val n = store.shareModels(Engine.loadedPath)
+                if (n > 0) {
+                    refreshModels()
+                    if (!loading) engineMessage = "Moved $n model(s) to the shared folder LocalForge/models, so both LocalForge apps can use them."
+                }
+            } catch (_: Exception) {
+            } finally {
+                sharing = false
+            }
+        }
     }
 
     fun refreshModels() {
@@ -281,6 +483,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     /** Loads a model and waits until it's ready. Returns true on success. */
     private suspend fun loadModelNow(m: LocalModel): Boolean {
+        if (useRemote) disconnectRemote()
+        if (useHorde) stopHorde()
+        if (useSpace) stopSpace()
         loading = true
         engineMessage = "Loading ${m.name}…"
         var err: String? = null
@@ -305,7 +510,20 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         return ok
     }
 
-    fun unloadModel() {
+    /** [keepRemote]: the Autopilot stopping leaves the remote engine set up (its GPU scales down by itself). */
+    fun unloadModel(keepRemote: Boolean = false) {
+        if (Engine.isSpace) {
+            if (!keepRemote) stopSpace() else SpaceEngine.stop()
+            return
+        }
+        if (Engine.isHorde) {
+            if (!keepRemote) stopHorde() else HordeEngine.stop()
+            return
+        }
+        if (Engine.isRemote) {
+            if (!keepRemote) disconnectRemote() else RemoteEngine.stop()
+            return
+        }
         viewModelScope.launch {
             Engine.unload()
             loadedModel = null
@@ -348,6 +566,23 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun send(onPage: Boolean = false) {
         val text = input.trim()
         if (text.isEmpty() || generating || loading) return
+        if (Engine.isRemote && RemoteEngine.asleep()) {
+            viewModelScope.launch {
+                try { wakeRemote(); send(onPage) }
+                catch (e: CancellationException) { throw e }
+                catch (e: Throwable) { messages += UiMessage(Role.NOTE, e.message ?: "The remote engine didn't wake up.") }
+            }
+            return
+        }
+        if (!Engine.isLoaded && useRemote && remoteUrl.isNotBlank()) {
+            viewModelScope.launch {
+                messages += UiMessage(Role.NOTE, "Connecting to the remote engine…")
+                loading = true
+                val ok = try { connectRemoteNow(remoteUrl, remoteKey) } finally { loading = false }
+                if (ok) send(onPage) else messages.add(UiMessage(Role.NOTE, engineMessage ?: "Couldn't reach the remote engine."))
+            }
+            return
+        }
         if (!Engine.isLoaded) {
             // The model is unloaded if Android restarted the app; reload the last one automatically.
             val last = localModels.firstOrNull { it.name == lastModelName } ?: localModels.singleOrNull()
@@ -430,6 +665,65 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             }
             runAgent()
         }
+    }
+
+    // ---- Autopilot hooks (LocalForge Autopilot drives the normal chat loop, one round at a time) ----
+
+    /** Starts one request with a prompt written by the app. Returns false if the AI is busy. */
+    fun sendAuto(prompt: String, display: String): Boolean {
+        if (generating || loading || !Engine.isLoaded) return false
+        messages += UiMessage(Role.USER, display, prompt)
+        stepsLeft = 10
+        totalSteps = 0
+        resetRequestState()
+        requestStartedAt = System.currentTimeMillis()
+        timeNudged = false
+        runAgent()
+        return true
+    }
+
+    /** Loads [name] (or the last used / only model) and waits. Returns true when a model is ready. */
+    suspend fun ensureModel(name: String?): Boolean {
+        if (useSpace) {
+            SpaceEngine.token = hfToken
+            if (!SpaceEngine.ready) SpaceEngine.ready = true
+            return true
+        }
+        if (useHorde) {
+            if (!HordeEngine.ready) {
+                HordeEngine.configure(prefs.getString("hordeModel", "") ?: "", hordeKey, prefs.getInt("hordeCtx", 4096), prefs.getInt("hordeReply", 512))
+                HordeEngine.ready = HordeEngine.model.isNotBlank()
+            }
+            return HordeEngine.ready
+        }
+        if (useRemote) {
+            if (loading || remoteBusy) return false
+            if (!Engine.isRemote) {
+                loading = true
+                val ok = try { connectRemoteNow(remoteUrl, remoteKey) } finally { loading = false }
+                if (!ok) return false
+            }
+            return try { wakeRemote(); true } catch (e: CancellationException) { throw e } catch (e: Throwable) {
+                engineMessage = e.message; false
+            }
+        }
+        if (Engine.isLoaded && (name == null || loadedModel == name)) return true
+        refreshModels()
+        val pick = localModels.firstOrNull { it.name == name } ?: localModels.firstOrNull { it.name == lastModelName }
+            ?: localModels.singleOrNull() ?: return false
+        if (Engine.isLoaded && loadedModel == pick.name) return true
+        if (loading) return false
+        return loadModelNow(pick)
+    }
+
+    /** An approval card is waiting in the chat. */
+    fun hasPendingCard(): Boolean = messages.takeLast(10).any { m -> m.actions.any { it.status == ActionStatus.PENDING } }
+
+    /** A 24/7 chat would grow forever: the Autopilot's memory keeps what matters, so drop the oldest messages. */
+    fun pruneMessages(keep: Int) {
+        if (generating || messages.size <= keep) return
+        repeat(messages.size - keep) { messages.removeAt(0) }
+        saveChat()
     }
 
     private val fileWords = Regex(
@@ -762,7 +1056,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     /** Shows the Browser tab with the chat panel open, so the user can watch the AI work on the page. */
     private fun showBrowser() {
         main.post {
-            if (tab != Tab.BROWSER) { tab = Tab.BROWSER; pagePanelOpen = true }
+            // The Autopilot works in the background: don't pull the user away from the screen they're on.
+            if (tab != Tab.BROWSER && tab != Tab.AUTOPILOT) { tab = Tab.BROWSER; pagePanelOpen = true }
         }
     }
 
@@ -1072,7 +1367,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                         var a = a0
                         if (a is FileAction.Browser) {
                             if (a.kind == "browse" || a.kind == "fetch") a = fixUrl(a)
-                            val key = "${a.kind}|${a.path}|${a.content}" + if (a.kind in setOf("extract", "page", "scroll")) "|" + WebBrowser.url else ""
+                            val key = "${a.kind}|${a.path}|${a.content}" + if (a.kind in setOf("extract", "page", "scroll", "network")) "|" + WebBrowser.url else ""
                             val site = siteFor(a)
                             when {
                                 a.kind in BrowserTools.PAGE_KINDS && !WebBrowser.hasPage -> {
@@ -1463,6 +1758,26 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     init {
         WebBrowser.init(app)
+        SpaceEngine.onStatus = { msg -> viewModelScope.launch { spaceMessage = msg; if (msg != null) engineMessage = msg } }
+        if (useSpace) {
+            SpaceEngine.token = hfToken
+            SpaceEngine.ready = true
+            loadedModel = "🤗 " + SpaceEngine.MODEL
+        }
+        HordeEngine.onStatus = { msg -> viewModelScope.launch { hordeMessage = msg; if (msg != null) engineMessage = msg } }
+        // AI Horde's models didn't stay uncensored, so the app no longer offers it: switch it off if it was on.
+        if (useHorde) {
+            useHorde = false; prefs.edit().putBoolean("useHorde", false).apply()
+        }
+        if (useHorde && !prefs.getString("hordeModel", "").isNullOrBlank()) {
+            HordeEngine.configure(prefs.getString("hordeModel", "")!!, hordeKey, prefs.getInt("hordeCtx", 4096), prefs.getInt("hordeReply", 512))
+            HordeEngine.ready = true
+            loadedModel = "🌐 " + HordeEngine.model.substringAfterLast('/')
+        } else if (useRemote && remoteUrl.isNotBlank()) {
+            RemoteEngine.configure(remoteUrl, remoteKey, prefs.getString("remoteModel", "") ?: "", prefs.getInt("remoteCtx", 8192))
+            RemoteEngine.ready = true
+            loadedModel = remoteName()
+        }
         refreshPermission()
         refreshModels()
         device = store.deviceInfo()

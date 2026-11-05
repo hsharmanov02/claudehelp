@@ -111,7 +111,7 @@ fun ModelsScreen(vm: AppViewModel) {
         }
         items(vm.localModels, key = { "local-" + it.path }) { m ->
             val active = vm.loadedModel == m.name
-            val external = m.file.parentFile != vm.store.dir
+            val external = !vm.store.isOwn(m)
             Panel(borderColor = if (active) C.Accent else C.Border) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Box(Modifier.weight(1f)) { StatusDot(active, m.name.removeSuffix(".gguf").take(40)) }
@@ -229,7 +229,7 @@ fun ModelsScreen(vm: AppViewModel) {
     }
 
     confirmDelete?.let { m ->
-        val external = m.file.parentFile != vm.store.dir
+        val external = !vm.store.isOwn(m)
         AlertDialog(
             onDismissRequest = { confirmDelete = null },
             title = { Text(if (external) "Remove from list?" else "Delete model?") },

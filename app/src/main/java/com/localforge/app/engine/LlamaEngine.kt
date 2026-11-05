@@ -64,7 +64,16 @@ object Engine {
     @Volatile var loadedPath: String? = null
         private set
 
-    val isLoaded: Boolean get() = handle != 0L
+    val isLoaded: Boolean get() = handle != 0L || RemoteEngine.ready || HordeEngine.ready || SpaceEngine.ready
+
+    /** True when chats go to the remote GPU engine instead of a model on the phone. */
+    val isRemote: Boolean get() = handle == 0L && RemoteEngine.ready && !HordeEngine.ready && !SpaceEngine.ready
+
+    /** True when chats go to AI Horde's volunteer GPUs. */
+    val isHorde: Boolean get() = handle == 0L && HordeEngine.ready
+
+    /** True when chats go to the uncensored Gemma 31B Hugging Face Space. */
+    val isSpace: Boolean get() = handle == 0L && SpaceEngine.ready && !HordeEngine.ready
 
     /** Guards the handle against being freed while the UI thread counts tokens. */
     private val lock = Any()
@@ -73,7 +82,7 @@ object Engine {
     }
 
     /** Context size of the loaded model (0 if none). */
-    fun contextSize(): Int = synchronized(lock) { if (handle != 0L) LlamaEngine.nativeCtxSize(handle) else 0 }
+    fun contextSize(): Int = synchronized(lock) { if (handle != 0L) LlamaEngine.nativeCtxSize(handle) else if (HordeEngine.ready) HordeEngine.ctx else if (SpaceEngine.ready) SpaceEngine.CTX else if (RemoteEngine.ready) RemoteEngine.ctx else 0 }
 
     /** Exact token count of [text] for the loaded model, or an estimate if none is loaded. */
     fun countTokens(text: String): Int = synchronized(lock) {
@@ -122,6 +131,9 @@ object Engine {
     }
 
     fun stop() {
+        RemoteEngine.stop()
+        HordeEngine.stop()
+        SpaceEngine.stop()
         val h = handle
         if (h != 0L) LlamaEngine.nativeStop(h)
     }
@@ -136,6 +148,35 @@ object Engine {
         temperature: Float,
         noThink: Boolean = false,
         prefill: String = "",
+        onText: (String) -> Unit
+    ): String {
+        if (handle == 0L && HordeEngine.ready) {
+            val out = HordeEngine.chat(messages, maxTokens, temperature, noThink, prefill, onText)
+            lastTokensPerSecond = HordeEngine.lastTokensPerSecond
+            return out
+        }
+        if (handle == 0L && SpaceEngine.ready) {
+            val out = SpaceEngine.chat(messages, maxTokens, temperature, prefill, onText)
+            lastTokensPerSecond = SpaceEngine.lastTokensPerSecond
+            return out
+        }
+        if (handle == 0L && RemoteEngine.ready) {
+            val t0 = System.nanoTime()
+            var first = 0L
+            var pieces = 0
+            val out = RemoteEngine.chat(messages, maxTokens, temperature, noThink, prefill) { p ->
+                if (pieces++ == 0) first = System.nanoTime()
+                onText(p)
+            }
+            val secs = (System.nanoTime() - (if (first > 0) first else t0)) / 1e9
+            lastTokensPerSecond = RemoteEngine.lastTokensPerSecond.takeIf { it > 0 } ?: if (pieces > 1 && secs > 0) (pieces - 1) / secs else 0.0
+            return out
+        }
+        return chatLocal(messages, maxTokens, temperature, noThink, prefill, onText)
+    }
+
+    private suspend fun chatLocal(
+        messages: List<ChatMessage>, maxTokens: Int, temperature: Float, noThink: Boolean, prefill: String,
         onText: (String) -> Unit
     ): String = withContext(dispatcher) {
         val h = handle
