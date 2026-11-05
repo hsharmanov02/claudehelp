@@ -9,7 +9,18 @@ REFUSALS = ("i can't", "i cannot", "i'm sorry", "as an ai", "i won't", "cannot f
 
 def call(path, body=None):
     r = urllib.request.Request(API + path, data=json.dumps(body).encode() if body else None, headers=H)
-    return json.load(urllib.request.urlopen(r, timeout=60))
+    try:
+        return json.load(urllib.request.urlopen(r, timeout=60))
+    except urllib.error.HTTPError as e:
+        raise SystemExit(f"{path}: HTTP {e.code}: {e.read()[:400]!r}")
+
+
+import urllib.error
+for url in ["https://aihorde.net/api/v2/status/heartbeat", "https://stablehorde.net/api/v2/status/heartbeat"]:
+    try:
+        print(url, urllib.request.urlopen(urllib.request.Request(url, headers={"User-Agent": "LocalForge-test"}), timeout=30).status)
+    except urllib.error.HTTPError as e:
+        print(url, e.code, e.read()[:300])
 
 
 models = sorted(call("/status/models?type=text"), key=lambda m: -m["count"])
