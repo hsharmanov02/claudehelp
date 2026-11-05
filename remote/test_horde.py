@@ -25,7 +25,7 @@ print("\nuser info for anonymous:", {k: v for k, v in call("/find_user").items()
       if True else "")
 
 filler = "The quick brown fox jumps over the lazy dog. " * 600   # about 6000 tokens
-for model, ctx in [("koboldcpp/gemma-4-31B-it-heretic", 8192), ("koboldcpp/L3-8B-Stheno-v3.2", 8192)]:
+for model, ctx in [("koboldcpp/gemma-4-31B-it-heretic", 16384), ("wicked-tutu-26b-w8a16", 16384)]:
     t = time.time()
     try:
         prompt = f"<start_of_turn>user\n{filler}\nIgnore the text above. Reply with exactly: LocalForge works<end_of_turn>\n<start_of_turn>model\n"
@@ -34,7 +34,8 @@ for model, ctx in [("koboldcpp/gemma-4-31B-it-heretic", 8192), ("koboldcpp/L3-8B
         print(f"\n[{model}] long prompt job: {job}")
         while True:
             time.sleep(3)
-            c = call(f"/generate/text/check/{job['id']}")
+            c = call(f"/generate/text/status/{job['id']}")
+            print("  ", {k: c.get(k) for k in ("queue_position", "wait_time", "processing", "done")})
             if c.get("done") or c.get("faulted") or not c.get("is_possible", True) or time.time() - t > 400:
                 print("check:", c)
                 break

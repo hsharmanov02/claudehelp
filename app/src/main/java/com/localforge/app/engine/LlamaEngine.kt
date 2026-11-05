@@ -64,10 +64,13 @@ object Engine {
     @Volatile var loadedPath: String? = null
         private set
 
-    val isLoaded: Boolean get() = handle != 0L || RemoteEngine.ready
+    val isLoaded: Boolean get() = handle != 0L || RemoteEngine.ready || HordeEngine.ready
 
     /** True when chats go to the remote GPU engine instead of a model on the phone. */
-    val isRemote: Boolean get() = handle == 0L && RemoteEngine.ready
+    val isRemote: Boolean get() = handle == 0L && RemoteEngine.ready && !HordeEngine.ready
+
+    /** True when chats go to AI Horde's volunteer GPUs. */
+    val isHorde: Boolean get() = handle == 0L && HordeEngine.ready
 
     /** Guards the handle against being freed while the UI thread counts tokens. */
     private val lock = Any()
@@ -76,7 +79,7 @@ object Engine {
     }
 
     /** Context size of the loaded model (0 if none). */
-    fun contextSize(): Int = synchronized(lock) { if (handle != 0L) LlamaEngine.nativeCtxSize(handle) else if (RemoteEngine.ready) RemoteEngine.ctx else 0 }
+    fun contextSize(): Int = synchronized(lock) { if (handle != 0L) LlamaEngine.nativeCtxSize(handle) else if (HordeEngine.ready) HordeEngine.ctx else if (RemoteEngine.ready) RemoteEngine.ctx else 0 }
 
     /** Exact token count of [text] for the loaded model, or an estimate if none is loaded. */
     fun countTokens(text: String): Int = synchronized(lock) {
@@ -126,6 +129,7 @@ object Engine {
 
     fun stop() {
         RemoteEngine.stop()
+        HordeEngine.stop()
         val h = handle
         if (h != 0L) LlamaEngine.nativeStop(h)
     }
@@ -142,6 +146,11 @@ object Engine {
         prefill: String = "",
         onText: (String) -> Unit
     ): String {
+        if (handle == 0L && HordeEngine.ready) {
+            val out = HordeEngine.chat(messages, maxTokens, temperature, noThink, prefill, onText)
+            lastTokensPerSecond = HordeEngine.lastTokensPerSecond
+            return out
+        }
         if (handle == 0L && RemoteEngine.ready) {
             val t0 = System.nanoTime()
             var first = 0L

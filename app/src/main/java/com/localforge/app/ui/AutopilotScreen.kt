@@ -210,6 +210,8 @@ fun AutopilotScreen(vm: AppViewModel) {
             }
         }
 
+        HordeEngineCard(vm)
+
         RemoteEngineCard(vm)
 
         // ---- unattended permissions ----

@@ -33,6 +33,7 @@ import com.localforge.app.data.LocalModel
 import com.localforge.app.data.ModelStore
 import com.localforge.app.engine.ChatMessage
 import com.localforge.app.engine.Engine
+import com.localforge.app.engine.HordeEngine
 import com.localforge.app.engine.RemoteEngine
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -154,6 +155,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         RemoteEngine.ready = false
         RemoteEngine.configure(remoteUrl, remoteKey)
         return try {
+            if (useHorde) stopHorde()
             if (Engine.isLoaded) Engine.unload()
             val name = RemoteEngine.connect()
             useRemote = true
@@ -169,6 +171,57 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             engineMessage = e.message ?: "Couldn't reach the remote engine."
             false
         }
+    }
+
+    // ---- AI Horde: free volunteer GPUs, no account (prompts aren't private) ----
+    var useHorde by mutableStateOf(prefs.getBoolean("useHorde", false))
+        private set
+    var hordeKey by mutableStateOf(prefs.getString("hordeKey", "") ?: "")
+        private set
+    val hordeModels = mutableStateListOf<HordeEngine.HordeModel>()
+    var hordeBusy by mutableStateOf(false)
+        private set
+    var hordeMessage by mutableStateOf<String?>(null)
+        private set
+
+    /** Reads which models AI Horde's volunteers are serving right now. */
+    fun fetchHordeModels() {
+        if (hordeBusy) return
+        hordeBusy = true
+        hordeMessage = "Asking AI Horde which models are online…"
+        viewModelScope.launch {
+            try {
+                val list = HordeEngine.listModels()
+                hordeModels.clear(); hordeModels.addAll(list)
+                hordeMessage = if (list.isEmpty()) "No text models are online on AI Horde right now." else null
+            } catch (e: CancellationException) { throw e } catch (e: Throwable) {
+                hordeMessage = e.message ?: "Couldn't reach AI Horde."
+            } finally { hordeBusy = false }
+        }
+    }
+
+    /** Uses [m] on AI Horde for every chat (and the Autopilot). */
+    fun useHordeModel(m: HordeEngine.HordeModel, key: String) {
+        if (generating) return
+        viewModelScope.launch {
+            if (useRemote) disconnectRemote()
+            if (Engine.isLoaded && !Engine.isHorde) Engine.unload()
+            hordeKey = key.trim()
+            HordeEngine.use(m, hordeKey)
+            useHorde = true
+            prefs.edit().putBoolean("useHorde", true).putString("hordeKey", hordeKey).putString("hordeModel", m.name)
+                .putInt("hordeCtx", HordeEngine.ctx).putInt("hordeReply", HordeEngine.maxReply).apply()
+            loadedModel = "🌐 " + m.short
+            engineMessage = "Using ${m.short} on AI Horde (${HordeEngine.ctx} tokens of context)"
+        }
+    }
+
+    fun stopHorde() {
+        HordeEngine.stop()
+        HordeEngine.ready = false
+        useHorde = false
+        prefs.edit().putBoolean("useHorde", false).apply()
+        if (loadedModel?.startsWith("🌐") == true) loadedModel = null
     }
 
     /** Back to models on the phone. The remote GPU scales down by itself. */
@@ -368,6 +421,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     /** Loads a model and waits until it's ready. Returns true on success. */
     private suspend fun loadModelNow(m: LocalModel): Boolean {
         if (useRemote) disconnectRemote()
+        if (useHorde) stopHorde()
         loading = true
         engineMessage = "Loading ${m.name}…"
         var err: String? = null
@@ -394,6 +448,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     /** [keepRemote]: the Autopilot stopping leaves the remote engine set up (its GPU scales down by itself). */
     fun unloadModel(keepRemote: Boolean = false) {
+        if (Engine.isHorde) {
+            if (!keepRemote) stopHorde() else HordeEngine.stop()
+            return
+        }
         if (Engine.isRemote) {
             if (!keepRemote) disconnectRemote() else RemoteEngine.stop()
             return
@@ -558,6 +616,13 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     /** Loads [name] (or the last used / only model) and waits. Returns true when a model is ready. */
     suspend fun ensureModel(name: String?): Boolean {
+        if (useHorde) {
+            if (!HordeEngine.ready) {
+                HordeEngine.configure(prefs.getString("hordeModel", "") ?: "", hordeKey, prefs.getInt("hordeCtx", 4096), prefs.getInt("hordeReply", 512))
+                HordeEngine.ready = HordeEngine.model.isNotBlank()
+            }
+            return HordeEngine.ready
+        }
         if (useRemote) {
             if (loading || remoteBusy) return false
             if (!Engine.isRemote) {
@@ -1620,7 +1685,12 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     init {
         WebBrowser.init(app)
-        if (useRemote && remoteUrl.isNotBlank()) {
+        HordeEngine.onStatus = { msg -> viewModelScope.launch { hordeMessage = msg; if (msg != null) engineMessage = msg } }
+        if (useHorde && !prefs.getString("hordeModel", "").isNullOrBlank()) {
+            HordeEngine.configure(prefs.getString("hordeModel", "")!!, hordeKey, prefs.getInt("hordeCtx", 4096), prefs.getInt("hordeReply", 512))
+            HordeEngine.ready = true
+            loadedModel = "🌐 " + HordeEngine.model.substringAfterLast('/')
+        } else if (useRemote && remoteUrl.isNotBlank()) {
             RemoteEngine.configure(remoteUrl, remoteKey, prefs.getString("remoteModel", "") ?: "", prefs.getInt("remoteCtx", 8192))
             RemoteEngine.ready = true
             loadedModel = remoteName()

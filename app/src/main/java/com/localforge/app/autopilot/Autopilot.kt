@@ -337,7 +337,13 @@ object Autopilot {
 
     private suspend fun ensureModel(): Boolean {
         val vm = app.state
-        if (Engine.isLoaded && !vm.useRemote && (modelName == null || vm.loadedModel == modelName)) { loadFails = 0; return true }
+        if (Engine.isLoaded && !vm.useRemote && !vm.useHorde && (modelName == null || vm.loadedModel == modelName)) { loadFails = 0; return true }
+        if (vm.useHorde) {
+            if (vm.ensureModel(null)) { loadFails = 0; return true }
+            showStatus("Pick an AI Horde model on this screen.")
+            nextAt = now() + 60_000
+            return false
+        }
         if (vm.useRemote) {
             if (!Engine.isRemote || RemoteEngine.asleep()) showStatus("Waking the remote GPU (a minute or two after a quiet spell)…")
             if (vm.ensureModel(null)) { loadFails = 0; return true }

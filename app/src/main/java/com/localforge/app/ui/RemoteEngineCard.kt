@@ -1,5 +1,13 @@
 package com.localforge.app.ui
 
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.text.style.TextOverflow
+import com.localforge.app.engine.HordeEngine
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
@@ -100,6 +108,56 @@ fun RemoteEngineCard(vm: AppViewModel) {
                         "spell wakes the GPU (about a minute). Modal bills only while it's awake.",
                     color = C.Muted, fontSize = 12.sp
                 )
+            }
+        }
+    }
+}
+
+/**
+ * "AI Horde": free volunteer GPUs with no account. Lists the models online now (uncensored first); tap one to use it.
+ */
+@Composable
+fun HordeEngineCard(vm: AppViewModel) {
+    var open by remember { mutableStateOf(vm.useHorde) }
+    val on = vm.useHorde && Engine.isHorde
+    Panel(borderColor = if (on) C.Good else C.Border) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Box(Modifier.weight(1f)) { StatusDot(on, if (on) "AI Horde on (free)" else "AI Horde: free, no account") }
+            if (on) Tag("🌐 Horde", C.CardInner, C.Good) else TextButton(onClick = {
+                open = !open
+                if (open && vm.hordeModels.isEmpty()) vm.fetchHordeModels()
+            }) { Text(if (open) "Hide" else "Show models", color = C.Accent) }
+        }
+        Text(
+            if (on) "${HordeEngine.model.substringAfterLast('/')} · ${HordeEngine.ctx} tokens · replies up to ${HordeEngine.maxReply} tokens"
+            else "Big uncensored models on volunteers' GPUs. Nothing to sign up for. Not private: the volunteer running the model could read your messages.",
+            color = C.Muted, fontSize = 13.sp, fontFamily = if (on) FontFamily.Monospace else FontFamily.Default
+        )
+        vm.hordeMessage?.let { Text(it, color = C.Gold, fontSize = 13.sp) }
+        if (open || on) {
+            Spacer(Modifier.height(8.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(onClick = { open = true; vm.fetchHordeModels() }, enabled = !vm.hordeBusy) {
+                    Text(if (vm.hordeBusy) "Checking…" else if (on) "Switch model" else "Refresh")
+                }
+                if (on) OutlinedButton(onClick = { vm.stopHorde() }, enabled = !vm.generating) { Text("Stop using Horde", color = C.Bad) }
+            }
+            vm.hordeModels.take(14).forEach { m ->
+                val current = on && HordeEngine.model == m.name
+                Row(
+                    Modifier.fillMaxWidth().padding(top = 6.dp)
+                        .clip(RoundedCornerShape(14.dp)).background(if (current) C.AccentDark else C.CardInner)
+                        .clickable(enabled = !vm.generating) { vm.useHordeModel(m, vm.hordeKey) }
+                        .padding(horizontal = 12.dp, vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text(m.short, color = C.Text, fontWeight = FontWeight.SemiBold, fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Text("${m.workers} GPU${if (m.workers == 1) "" else "s"} · wait ~${m.eta}s · ${m.ctx / 1024}k context",
+                            color = C.Muted, fontSize = 12.sp)
+                    }
+                    if (m.uncensored) Tag("uncensored", C.Bg, C.Good)
+                }
             }
         }
     }
