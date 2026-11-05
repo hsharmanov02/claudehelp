@@ -22,7 +22,17 @@ UNCENSORED = ["heretic", "abliterat", "uncensor", "uncnr", "stheno", "dark", "ro
               "cydonia", "lexi", "dolphin", "hermes", "mythomax", "tiefighter", "fimbulvetr", "lumimaid"]
 
 
+import threading
+_lock, _last = threading.Lock(), [0.0]
+
+
 def call(path, body=None, method=None):
+    # AI Horde allows about 2 requests a second per IP: space every call out.
+    with _lock:
+        wait = _last[0] + 0.7 - time.time()
+        if wait > 0:
+            time.sleep(wait)
+        _last[0] = time.time()
     r = urllib.request.Request(API + path, data=json.dumps(body).encode() if body else None, headers=H, method=method)
     try:
         return json.load(urllib.request.urlopen(r, timeout=60))
@@ -48,7 +58,7 @@ def gen(model, prompt, stops):
                "params": {"max_length": 200, "max_context_length": 2048, "temperature": 0.7, "stop_sequence": stops}})
     t = time.time()
     while time.time() - t < 300:
-        time.sleep(4)
+        time.sleep(6)
         s = call(f"/generate/text/status/{job['id']}")
         if s.get("done") or s.get("faulted") or not s.get("is_possible", True):
             return (s.get("generations") or [{}])[0].get("text", "") if s.get("done") else f"(faulted={s.get('faulted')})"
@@ -81,7 +91,7 @@ def run(model, label, ask):
 
 
 jobs = [(m, l, a) for m in pick for l, a in PROMPTS.items()]
-with ThreadPoolExecutor(8) as ex:
+with ThreadPoolExecutor(6) as ex:
     results = list(ex.map(lambda j: run(*j), jobs))
 score = {m: [] for m in pick}
 for model, label, bad, text in results:
