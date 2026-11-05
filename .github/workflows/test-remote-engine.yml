@@ -33,6 +33,19 @@ jobs:
               print(q, "->", ", ".join(f"{m['id']} ({m.get('downloads', 0)})" for m in rows) or "none")
           PY
 
+      - name: Check the deploy default model resolves to a single GGUF file
+        run: |
+          pip install -q huggingface_hub modal
+          LOCALFORGE_KEY=x python3 -c "
+          import sys; sys.path.insert(0, 'remote')
+          import modal_engine as m
+          from huggingface_hub import HfApi
+          info = HfApi().model_info(m.MODEL_REPO, files_metadata=True)
+          name = m.pick_file([s.rfilename for s in info.siblings], m.QUANT)
+          size = next(s.size for s in info.siblings if s.rfilename == name)
+          print(f'default {m.MODEL_REPO} -> {name} ({size / 1e9:.1f} GB)')
+          assert size < 20e9, 'too big for a 24 GB GPU'"
+
       - name: Pick the test model
         id: model
         run: |
