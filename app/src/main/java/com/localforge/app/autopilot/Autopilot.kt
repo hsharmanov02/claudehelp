@@ -380,7 +380,7 @@ object Autopilot {
             if (!enabled) return
             if (now() - t0 > AutopilotLogic.ROUND_TIMEOUT_MS) {
                 vm.stopGenerating()
-                addJournal("Stopped: the round took longer than 30 minutes.", n)
+                addJournal("Stopped: the round took longer than 50 minutes.", n)
                 break
             }
             delay(1000)

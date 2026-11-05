@@ -22,7 +22,7 @@ object AutopilotLogic {
     const val PROMPT_MEMORY = 20
     const val PROMPT_MEMORY_CHARS = 1800
     const val PROMPT_JOURNAL = 5
-    const val ROUND_TIMEOUT_MS = 30 * 60_000L
+    const val ROUND_TIMEOUT_MS = 50 * 60_000L
     const val KEEP_MESSAGES = 120
 
     private val noteTag = Regex("<(note|remember)>([\\s\\S]*?)</\\1>", RegexOption.IGNORE_CASE)

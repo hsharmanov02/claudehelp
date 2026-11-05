@@ -94,7 +94,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     var browserAutoApprove by mutableStateOf(prefs.getBoolean("browserAutoApprove", BuildConfig.AUTOPILOT))
         private set
     /** Lets thinking models reason before answering. Off by default: on a phone it can take many minutes. */
-    var thinkHarder by mutableStateOf(prefs.getBoolean("thinkHarder2", true))
+    var thinkHarder by mutableStateOf(prefs.getBoolean("thinkHarder2", !BuildConfig.AUTOPILOT))
         private set
     fun updateThinkHarder(v: Boolean) { thinkHarder = v; prefs.edit().putBoolean("thinkHarder2", v).apply() }
 
@@ -104,9 +104,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     var stepNumber by mutableStateOf(0)
         private set
     /** Longest one reply may take, and how long a whole request may keep using tools, before the app steps in. */
-    private val replyLimitMs get() = if (thinkHarder) 5 * 60_000L else 3 * 60_000L
+    // The Autopilot runs unattended, so a slow phone may take its time: nobody is waiting for the reply.
+    private val replyLimitMs get() = if (BuildConfig.AUTOPILOT) 20 * 60_000L else if (thinkHarder) 5 * 60_000L else 3 * 60_000L
     /** Whole request: after this long the app forces the model to answer with what it has, then ends the turn. */
-    private val requestLimitMs get() = if (thinkHarder) 12 * 60_000L else 7 * 60_000L
+    private val requestLimitMs get() = if (BuildConfig.AUTOPILOT) 45 * 60_000L else if (thinkHarder) 12 * 60_000L else 7 * 60_000L
     /** Thinking budget: after this much hidden thinking the model must stop thinking and act. */
     private val thinkTokenBudget = 600
     private val thinkTimeBudgetMs = 2 * 60_000L
