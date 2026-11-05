@@ -4,6 +4,7 @@ on:
   push:
     paths:
       - "remote/probe_free.py"
+      - "remote/test_space.py"
       - ".github/workflows/test-free.yml"
   workflow_dispatch:
 
@@ -17,4 +18,4 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: pip install -q gradio_client
-      - run: python3 -u remote/probe_free.py
+      - run: python3 -u remote/test_space.py
