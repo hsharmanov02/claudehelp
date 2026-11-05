@@ -19,14 +19,8 @@ jobs:
       fail-fast: false
       matrix:
         space:
-          - Clifford77/huihui-ai-Qwen2.5-72B-Instruct-abliterated1
-          - huguforever/qwen2.5-72b-abliterated-chat
-          - simo025/huihui-ai-Qwen2.5-72B-Instruct-abliterated
-          - Josssdiff/Huihui-Qwen3.6-35B-abliterated-chat
-          - kivilaid/Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive-ZeroGPU
-          - Anonimusman/QWEN-3.6-35B-A3B-ABLITERATED
-          - markpaulm/gemma-4-31B-it-abliterated
-          - zk-Armor/qwen3.8-27b-uncensored-chatbot
+          - "kivilaid/Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive-ZeroGPU /respond 1"
+          - "Josssdiff/Huihui-Qwen3.6-35B-abliterated-chat /chat"
     steps:
       - uses: actions/checkout@v4
-      - run: python3 -u remote/try_space.py "${{ matrix.space }}"
+      - run: python3 -u remote/try_space.py ${{ matrix.space }}

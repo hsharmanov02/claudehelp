@@ -44,6 +44,7 @@ def fill(prompt):
             data.append(d if isinstance(d, str) and d in ("off",) else (False if isinstance(d, bool) else d))
         else:
             data.append(d)
+    data += [None] * int(sys.argv[3] if len(sys.argv) > 3 else 0)
     return data
 
 
