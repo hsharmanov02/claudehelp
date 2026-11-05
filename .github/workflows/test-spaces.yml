@@ -1,0 +1,32 @@
+name: Test uncensored HF Spaces
+
+# One job per Space, so each gets its own machine (Hugging Face's free GPU quota is per visitor).
+on:
+  push:
+    paths:
+      - "remote/try_space.py"
+      - ".github/workflows/test-spaces.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  try:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        space:
+          - Clifford77/huihui-ai-Qwen2.5-72B-Instruct-abliterated1
+          - huguforever/qwen2.5-72b-abliterated-chat
+          - simo025/huihui-ai-Qwen2.5-72B-Instruct-abliterated
+          - Josssdiff/Huihui-Qwen3.6-35B-abliterated-chat
+          - kivilaid/Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive-ZeroGPU
+          - Anonimusman/QWEN-3.6-35B-A3B-ABLITERATED
+          - markpaulm/gemma-4-31B-it-abliterated
+          - zk-Armor/qwen3.8-27b-uncensored-chatbot
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 -u remote/try_space.py "${{ matrix.space }}"
