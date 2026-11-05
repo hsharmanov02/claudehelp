@@ -45,7 +45,7 @@ def stream_chat(prompt, max_tokens=200):
 
 
 t = time.time()
-for _ in range(120):
+for _ in range(200):  # a cold GPU start (image + model load) can take several minutes
     try:
         with req("/health", auth=False, timeout=30) as r:
             if r.status == 200:

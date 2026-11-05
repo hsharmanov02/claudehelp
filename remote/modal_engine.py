@@ -10,6 +10,9 @@ Deploy (the "Deploy Modal engine" GitHub workflow runs these for you):
     modal run remote/modal_engine.py::download
     modal deploy remote/modal_engine.py
 
+Note: the "Deploy Modal engine" workflow keeps the address out of the (public) logs, since any request, even one
+without the key, wakes the GPU.
+
 Settings (environment variables when deploying):
     LF_GPU        L4 (24 GB, default), T4 (16 GB, cheapest), A10, L40S (48 GB), A100-80GB
     LF_MODEL_REPO Hugging Face repo with GGUF files (must be abliterated/uncensored)
@@ -23,7 +26,7 @@ import subprocess
 import modal
 
 GPU = os.environ.get("LF_GPU", "L4")
-MODEL_REPO = os.environ.get("LF_MODEL_REPO", "mradermacher/Qwen3-14B-abliterated-GGUF")
+MODEL_REPO = os.environ.get("LF_MODEL_REPO", "bartowski/huihui-ai_Qwen3-14B-abliterated-GGUF")
 QUANT = os.environ.get("LF_QUANT", "Q4_K_M")
 CTX = int(os.environ.get("LF_CTX", "16384"))
 SCALEDOWN = int(os.environ.get("LF_SCALEDOWN", "120"))

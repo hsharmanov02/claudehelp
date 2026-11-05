@@ -210,6 +210,8 @@ fun AutopilotScreen(vm: AppViewModel) {
             }
         }
 
+        RemoteEngineCard(vm)
+
         // ---- unattended permissions ----
         Panel {
             Text("Let it run unattended", color = C.Text, fontWeight = FontWeight.Bold, fontSize = 18.sp)

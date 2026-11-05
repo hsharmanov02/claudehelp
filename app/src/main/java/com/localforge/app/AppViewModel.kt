@@ -33,6 +33,7 @@ import com.localforge.app.data.LocalModel
 import com.localforge.app.data.ModelStore
 import com.localforge.app.engine.ChatMessage
 import com.localforge.app.engine.Engine
+import com.localforge.app.engine.RemoteEngine
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -127,6 +128,68 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun updateMaxTokens(v: Int) { maxTokens = v; prefs.edit().putInt("maxTokens", v).apply() }
     fun updateAutoApprove(v: Boolean) { autoApprove = v; prefs.edit().putBoolean("autoApprove", v).apply() }
     fun updateBrowserAutoApprove(v: Boolean) { browserAutoApprove = v; prefs.edit().putBoolean("browserAutoApprove", v).apply() }
+    // ---- Remote engine: your own model on a rented GPU (remote/modal_engine.py) ----
+    var useRemote by mutableStateOf(prefs.getBoolean("useRemote", false))
+        private set
+    var remoteUrl by mutableStateOf(prefs.getString("remoteUrl", "") ?: "")
+        private set
+    var remoteKey by mutableStateOf(prefs.getString("remoteKey", "") ?: "")
+        private set
+    var remoteBusy by mutableStateOf(false)
+        private set
+
+    private fun remoteName() = "☁ " + RemoteEngine.model.ifBlank { "remote model" }
+
+    /** Checks the address and key (waking the GPU if needed) and uses the remote model for every chat. */
+    fun connectRemote(url: String, key: String) {
+        if (remoteBusy || generating) return
+        remoteBusy = true
+        viewModelScope.launch { connectRemoteNow(url, key); remoteBusy = false }
+    }
+
+    private suspend fun connectRemoteNow(url: String, key: String): Boolean {
+        remoteUrl = url.trim().trimEnd('/'); remoteKey = key.trim()
+        prefs.edit().putString("remoteUrl", remoteUrl).putString("remoteKey", remoteKey).apply()
+        engineMessage = "Connecting to the remote engine (a sleeping GPU takes a minute or two to wake)…"
+        RemoteEngine.ready = false
+        RemoteEngine.configure(remoteUrl, remoteKey)
+        return try {
+            if (Engine.isLoaded) Engine.unload()
+            val name = RemoteEngine.connect()
+            useRemote = true
+            prefs.edit().putBoolean("useRemote", true).putString("remoteModel", name).putInt("remoteCtx", RemoteEngine.ctx).apply()
+            loadedModel = remoteName()
+            engineMessage = "Remote engine ready: $name (${RemoteEngine.ctx} tokens of context)"
+            true
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            RemoteEngine.ready = false
+            loadedModel = null
+            engineMessage = e.message ?: "Couldn't reach the remote engine."
+            false
+        }
+    }
+
+    /** Back to models on the phone. The remote GPU scales down by itself. */
+    fun disconnectRemote() {
+        RemoteEngine.stop()
+        RemoteEngine.ready = false
+        useRemote = false
+        prefs.edit().putBoolean("useRemote", false).apply()
+        if (loadedModel?.startsWith("☁") == true) loadedModel = null
+        engineMessage = "Remote engine off: chats use models on this phone again."
+    }
+
+    private suspend fun wakeRemote() {
+        if (!Engine.isRemote || !RemoteEngine.asleep()) return
+        loading = true
+        engineMessage = "Waking the remote GPU (a minute or two after a quiet spell)…"
+        RemoteEngine.clearStop()
+        try { RemoteEngine.waitReady(); engineMessage = "Remote engine ready: ${RemoteEngine.model}" }
+        finally { loading = false }
+    }
+
     fun updateHfToken(v: String) { hfToken = v.trim(); prefs.edit().putString("hfToken", hfToken).apply() }
 
     // Phones have 4 fast cores at most; using the slow ones too makes generation slower, not faster.
@@ -304,6 +367,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     /** Loads a model and waits until it's ready. Returns true on success. */
     private suspend fun loadModelNow(m: LocalModel): Boolean {
+        if (useRemote) disconnectRemote()
         loading = true
         engineMessage = "Loading ${m.name}…"
         var err: String? = null
@@ -328,7 +392,12 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         return ok
     }
 
-    fun unloadModel() {
+    /** [keepRemote]: the Autopilot stopping leaves the remote engine set up (its GPU scales down by itself). */
+    fun unloadModel(keepRemote: Boolean = false) {
+        if (Engine.isRemote) {
+            if (!keepRemote) disconnectRemote() else RemoteEngine.stop()
+            return
+        }
         viewModelScope.launch {
             Engine.unload()
             loadedModel = null
@@ -371,6 +440,23 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun send(onPage: Boolean = false) {
         val text = input.trim()
         if (text.isEmpty() || generating || loading) return
+        if (Engine.isRemote && RemoteEngine.asleep()) {
+            viewModelScope.launch {
+                try { wakeRemote(); send(onPage) }
+                catch (e: CancellationException) { throw e }
+                catch (e: Throwable) { messages += UiMessage(Role.NOTE, e.message ?: "The remote engine didn't wake up.") }
+            }
+            return
+        }
+        if (!Engine.isLoaded && useRemote && remoteUrl.isNotBlank()) {
+            viewModelScope.launch {
+                messages += UiMessage(Role.NOTE, "Connecting to the remote engine…")
+                loading = true
+                val ok = try { connectRemoteNow(remoteUrl, remoteKey) } finally { loading = false }
+                if (ok) send(onPage) else messages.add(UiMessage(Role.NOTE, engineMessage ?: "Couldn't reach the remote engine."))
+            }
+            return
+        }
         if (!Engine.isLoaded) {
             // The model is unloaded if Android restarted the app; reload the last one automatically.
             val last = localModels.firstOrNull { it.name == lastModelName } ?: localModels.singleOrNull()
@@ -472,6 +558,17 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     /** Loads [name] (or the last used / only model) and waits. Returns true when a model is ready. */
     suspend fun ensureModel(name: String?): Boolean {
+        if (useRemote) {
+            if (loading || remoteBusy) return false
+            if (!Engine.isRemote) {
+                loading = true
+                val ok = try { connectRemoteNow(remoteUrl, remoteKey) } finally { loading = false }
+                if (!ok) return false
+            }
+            return try { wakeRemote(); true } catch (e: CancellationException) { throw e } catch (e: Throwable) {
+                engineMessage = e.message; false
+            }
+        }
         if (Engine.isLoaded && (name == null || loadedModel == name)) return true
         refreshModels()
         val pick = localModels.firstOrNull { it.name == name } ?: localModels.firstOrNull { it.name == lastModelName }
@@ -1523,6 +1620,11 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     init {
         WebBrowser.init(app)
+        if (useRemote && remoteUrl.isNotBlank()) {
+            RemoteEngine.configure(remoteUrl, remoteKey, prefs.getString("remoteModel", "") ?: "", prefs.getInt("remoteCtx", 8192))
+            RemoteEngine.ready = true
+            loadedModel = remoteName()
+        }
         refreshPermission()
         refreshModels()
         device = store.deviceInfo()

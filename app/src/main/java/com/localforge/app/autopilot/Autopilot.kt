@@ -10,6 +10,7 @@ import com.localforge.app.LocalForgeApp
 import com.localforge.app.Role
 import com.localforge.app.agent.WebBrowser
 import com.localforge.app.engine.Engine
+import com.localforge.app.engine.RemoteEngine
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -201,7 +202,7 @@ object Autopilot {
         vm.stopGenerating()
         scope.launch {
             delay(1500)
-            if (!enabled) vm.unloadModel()
+            if (!enabled) vm.unloadModel(keepRemote = true)
         }
         status = "Stopped. Press Continue to pick it up again, or start a new task."
         AutopilotService.stop(app)
@@ -336,7 +337,16 @@ object Autopilot {
 
     private suspend fun ensureModel(): Boolean {
         val vm = app.state
-        if (Engine.isLoaded && (modelName == null || vm.loadedModel == modelName)) { loadFails = 0; return true }
+        if (Engine.isLoaded && !vm.useRemote && (modelName == null || vm.loadedModel == modelName)) { loadFails = 0; return true }
+        if (vm.useRemote) {
+            if (!Engine.isRemote || RemoteEngine.asleep()) showStatus("Waking the remote GPU (a minute or two after a quiet spell)…")
+            if (vm.ensureModel(null)) { loadFails = 0; return true }
+            loadFails++
+            val wait = AutopilotLogic.loadBackoffSec(loadFails)
+            nextAt = now() + wait * 1000L
+            showStatus("Couldn't reach the remote engine (${vm.engineMessage ?: "unknown error"}). Trying again in ${AutopilotLogic.dur(wait.toLong())}.")
+            return false
+        }
         vm.refreshModels()
         if (vm.localModels.isEmpty()) {
             showStatus("Waiting: no models found. Allow all-files access, or download one in Models.")
