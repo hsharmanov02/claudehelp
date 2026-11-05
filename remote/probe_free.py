@@ -25,7 +25,7 @@ def openai_space(host):
         body = {"messages": [{"role": "system", "content": SYSTEM}, {"role": "user", "content": prompt}],
                 "max_tokens": 200, "temperature": 0.7, "chat_template_kwargs": {"enable_thinking": False}}
         r = urllib.request.Request(host + "/v1/chat/completions", data=json.dumps(body).encode(), headers=UA)
-        o = json.load(urllib.request.urlopen(r, timeout=600))
+        o = json.load(urllib.request.urlopen(r, timeout=240))
         return o["choices"][0]["message"].get("content") or "", (o.get("timings") or {}).get("predicted_per_second")
     return ask
 
@@ -48,10 +48,6 @@ def gradio_space(sid, build):
 
 
 SPACES = {
-    "Qwen3.6-35B-A3B Uncensored Aggressive Q4 (CPU, OpenAI API)":
-        lambda: openai_space("https://rikunarita-org-qwen3-6-35b-a3b-uncensored-hauhau-3cbf2f6.hf.space"),
-    "Qwen3.6-35B-A3B Uncensored Aggressive Q6 (CPU, OpenAI API)":
-        lambda: openai_space("https://silavon-qwen3-6-35b-a3b-uncensored-hauhaucs-aggr-864a91a.hf.space"),
     "Huihui gemma-4-31B abliterated v2 (ZeroGPU)":
         lambda: gradio_space("mxderncultxre/Gemma4-31b-uncensored-assistant",
                              lambda p: dict(text=p, files=None, history=[], thinking=False, max_new_tokens=200, api_name="/chat")),
@@ -61,6 +57,10 @@ SPACES = {
     "Qwen3.8-27B Uncensored (ZeroGPU)":
         lambda: gradio_space("JonathanColetti/Qwen3.8-27B-Uncensored-Demo",
                              lambda p: dict(message={"text": p, "files": []}, reasoning="off", api_name="/respond")),
+    "Qwen3.6-35B-A3B Uncensored Aggressive Q4 (CPU, OpenAI API)":
+        lambda: openai_space("https://rikunarita-org-qwen3-6-35b-a3b-uncensored-hauhau-3cbf2f6.hf.space"),
+    "Qwen3.6-35B-A3B Uncensored Aggressive Q6 (CPU, OpenAI API)":
+        lambda: openai_space("https://silavon-qwen3-6-35b-a3b-uncensored-hauhaucs-aggr-864a91a.hf.space"),
 }
 
 summary = {}
