@@ -5,9 +5,9 @@ import json, re, urllib.request, urllib.error
 from concurrent.futures import ThreadPoolExecutor
 
 UA = {"User-Agent": "LocalForge-test/1.0"}
-TERMS = ["abliterated", "abliteration", "uncensored", "huihui", "dolphin", "lexi", "abliterate"]
+TERMS = ["abliterated", "abliteration", "uncensored", "huihui", "dolphin", "lexi", "abliterate", "70b", "72b", "100b", "120b", "123b", "235b", "405b", "behemoth", "mistral-large", "magnum", "hermes", "goliath", "miqu", "euryale", "grok", "deepseek-v3", "glm", "gpt-oss-120b", "kimi", "qwen3-235b", "llama-3.1-405b", "nemotron"]
 NOT_TEXT = re.compile(r"flux|image|img|video|wan2|sdxl|diffusion|tts|voice|speech|face|photo|lora|nsfw-un|pixel|vl-|-vl|vision|music|audio|ocr", re.I)
-GOOD = re.compile(r"uncensor|abliterat", re.I)
+GOOD = re.compile(r"uncensor|abliterat|behemoth|magnum|euryale|goliath|miqu|dolphin|hermes|heretic", re.I)
 
 
 def get(url):
@@ -37,7 +37,7 @@ def check(sid):
     if NOT_TEXT.search(names) or not GOOD.search(names):
         return None
     b = size(names)
-    if b < 12:
+    if b < 85:
         return None
     rt = get(f"https://huggingface.co/api/spaces/{sid}/runtime") or {}
     hw = (rt.get("hardware") or {}).get("current")
@@ -48,7 +48,7 @@ def check(sid):
 with ThreadPoolExecutor(12) as ex:
     rows = [r for r in ex.map(check, list(ids)) if r]
 rows.sort(key=lambda r: (r["stage"] != "RUNNING", -r["b"], -r["likes"]))
-print(f"\n{len(rows)} uncensored/abliterated text-model spaces of 12B+:")
+print(f"\n{len(rows)} uncensored/abliterated text-model spaces of 85B+:")
 for r in rows:
     print(f"  {r['b']:>6.0f}B  {str(r['stage']):<15} {str(r['hw']):<14} {str(r['sdk']):<8} likes {r['likes']:>4}  {r['id']}  {r['models']}")
 
