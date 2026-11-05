@@ -153,10 +153,10 @@ fun HordeEngineCard(vm: AppViewModel) {
                 ) {
                     Column(Modifier.weight(1f)) {
                         Text(m.short, color = C.Text, fontWeight = FontWeight.SemiBold, fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                        Text("${m.workers} GPU${if (m.workers == 1) "" else "s"} · wait ~${m.eta}s · ${m.ctx / 1024}k context",
+                        Text("${"%.0f".format(m.billions)}B · ${m.workers} GPU${if (m.workers == 1) "" else "s"} · wait ~${m.eta}s · ${m.ctx / 1024}k context",
                             color = C.Muted, fontSize = 12.sp)
                     }
-                    if (m.uncensored) Tag("uncensored", C.Bg, C.Good)
+                    Tag(if (m.name.lowercase().let { "heretic" in it || "abliterat" in it }) "abliterated" else "uncensored", C.Bg, C.Good)
                 }
             }
         }

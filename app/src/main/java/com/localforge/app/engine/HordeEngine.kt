@@ -21,10 +21,16 @@ object HordeEngine {
     data class HordeModel(val name: String, val workers: Int, val queued: Double, val eta: Int, val ctx: Int, val maxReply: Int) {
         val uncensored: Boolean get() = UNCENSORED.any { name.lowercase().contains(it) }
         val short: String get() = name.substringAfterLast('/')
+        /** Size in billions of parameters, read from the name ("Cydonia-24B", "26B-A4B" -> 26), or 0 if it doesn't say. */
+        val billions: Double get() = Regex("(?<![a-z0-9])e?(\\d+(?:\\.\\d+)?)b(?![a-z])", RegexOption.IGNORE_CASE)
+            .findAll(name.substringAfterLast('/')).mapNotNull { it.groupValues[1].toDoubleOrNull() }.maxOrNull() ?: 0.0
     }
 
     /** Only models whose name says they're uncensored or abliterated (refusals removed) are ever listed or used. */
     val UNCENSORED = listOf("heretic", "abliterat", "uncensor", "uncnr", "dolphin", "lexi")
+
+    /** Only big models: small ones can't follow the app's tools and instructions well. */
+    const val MIN_BILLIONS = 20.0
 
     @Volatile var model: String = ""
         private set
@@ -93,13 +99,13 @@ object HordeEngine {
             val n = it.getString("name")
             val (c, r) = limits[n] ?: (4096 to 512)
             HordeModel(n, it.optInt("count"), it.optDouble("queued"), it.optInt("eta"), c.takeIf { v -> v > 0 } ?: 4096, r.takeIf { v -> v > 0 } ?: 512)
-        }.filter { it.workers > 0 && it.uncensored }
+        }.filter { it.workers > 0 && it.uncensored && it.billions >= MIN_BILLIONS && it.ctx >= 4096 }
             .sortedWith(compareByDescending<HordeModel> { it.workers }.thenBy { it.eta })
     }
 
     /** Uses [m] for every chat from now on. */
     fun use(m: HordeModel, k: String) {
-        require(m.uncensored) { "LocalForge only uses uncensored or abliterated models." }
+        require(m.uncensored && m.billions >= MIN_BILLIONS) { "LocalForge only uses uncensored or abliterated models of 20B or more." }
         configure(m.name, k, minOf(m.ctx, 32768), minOf(m.maxReply, 4096))
         ready = true
     }
@@ -115,7 +121,7 @@ object HordeEngine {
         val n = model.lowercase()
         val sb = StringBuilder()
         return when {
-            "gemma" in n -> {
+            "gemma" in n || n.substringAfterLast('/').startsWith("g4-") -> {
                 // Gemma has no system role: the system text goes before the first user message.
                 var system = ""
                 messages.forEach { m ->
