@@ -34,6 +34,7 @@ import com.localforge.app.data.ModelStore
 import com.localforge.app.engine.ChatMessage
 import com.localforge.app.engine.Engine
 import com.localforge.app.engine.HordeEngine
+import com.localforge.app.engine.SpaceEngine
 import com.localforge.app.engine.RemoteEngine
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -156,6 +157,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         RemoteEngine.configure(remoteUrl, remoteKey)
         return try {
             if (useHorde) stopHorde()
+            if (useSpace) stopSpace()
             if (Engine.isLoaded) Engine.unload()
             val name = RemoteEngine.connect()
             useRemote = true
@@ -222,6 +224,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         run {
             stopReplyForSwitch()
             if (useRemote) disconnectRemote()
+            if (useSpace) stopSpace()
             if (Engine.isLoaded && !Engine.isHorde) Engine.unload()
             hordeKey = key.trim()
             HordeEngine.use(m, hordeKey)
@@ -232,6 +235,48 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             engineMessage = "Using ${m.short} on AI Horde (${HordeEngine.ctx} tokens of context)"
             hordeMessage = "Ready: every chat now uses ${m.short}."
         }
+    }
+
+    // ---- Uncensored Gemma 31B on a public Hugging Face Space (free, no account; a free HF token gives more replies) ----
+    var useSpace by mutableStateOf(prefs.getBoolean("useSpace", false))
+        private set
+    var spaceBusy by mutableStateOf(false)
+        private set
+    var spaceMessage by mutableStateOf<String?>(null)
+        private set
+
+    fun useSpaceEngine() {
+        if (spaceBusy) return
+        spaceBusy = true
+        spaceMessage = "Connecting to the Hugging Face Space (it can take a minute to wake up)…"
+        viewModelScope.launch {
+            try {
+                stopReplyForSwitch()
+                if (useRemote) disconnectRemote()
+                if (useHorde) stopHorde()
+                if (Engine.isLoaded && !Engine.isSpace) Engine.unload()
+                SpaceEngine.token = hfToken
+                SpaceEngine.connect()
+                useSpace = true
+                prefs.edit().putBoolean("useSpace", true).apply()
+                loadedModel = "🤗 " + SpaceEngine.MODEL
+                engineMessage = "Using ${SpaceEngine.MODEL} on Hugging Face (free)"
+                spaceMessage = "Ready: every chat now uses ${SpaceEngine.MODEL}." +
+                    if (hfToken.isBlank()) " Without a Hugging Face token you get a few replies at a time." else ""
+            } catch (e: CancellationException) { throw e } catch (e: Throwable) {
+                SpaceEngine.ready = false
+                spaceMessage = e.message ?: "Couldn't reach the Hugging Face Space."
+            } finally { spaceBusy = false }
+        }
+    }
+
+    fun stopSpace() {
+        SpaceEngine.stop()
+        SpaceEngine.ready = false
+        useSpace = false
+        prefs.edit().putBoolean("useSpace", false).apply()
+        if (loadedModel?.startsWith("🤗") == true) loadedModel = null
+        spaceMessage = null
     }
 
     fun stopHorde() {
@@ -261,7 +306,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         finally { loading = false }
     }
 
-    fun updateHfToken(v: String) { hfToken = v.trim(); prefs.edit().putString("hfToken", hfToken).apply() }
+    fun updateHfToken(v: String) { hfToken = v.trim(); SpaceEngine.token = hfToken; prefs.edit().putString("hfToken", hfToken).apply() }
 
     // Phones have 4 fast cores at most; using the slow ones too makes generation slower, not faster.
     private fun defaultThreads(): Int = Runtime.getRuntime().availableProcessors().coerceAtMost(4).coerceAtLeast(2)
@@ -440,6 +485,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     private suspend fun loadModelNow(m: LocalModel): Boolean {
         if (useRemote) disconnectRemote()
         if (useHorde) stopHorde()
+        if (useSpace) stopSpace()
         loading = true
         engineMessage = "Loading ${m.name}…"
         var err: String? = null
@@ -466,6 +512,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     /** [keepRemote]: the Autopilot stopping leaves the remote engine set up (its GPU scales down by itself). */
     fun unloadModel(keepRemote: Boolean = false) {
+        if (Engine.isSpace) {
+            if (!keepRemote) stopSpace() else SpaceEngine.stop()
+            return
+        }
         if (Engine.isHorde) {
             if (!keepRemote) stopHorde() else HordeEngine.stop()
             return
@@ -634,6 +684,11 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     /** Loads [name] (or the last used / only model) and waits. Returns true when a model is ready. */
     suspend fun ensureModel(name: String?): Boolean {
+        if (useSpace) {
+            SpaceEngine.token = hfToken
+            if (!SpaceEngine.ready) SpaceEngine.ready = true
+            return true
+        }
         if (useHorde) {
             if (!HordeEngine.ready) {
                 HordeEngine.configure(prefs.getString("hordeModel", "") ?: "", hordeKey, prefs.getInt("hordeCtx", 4096), prefs.getInt("hordeReply", 512))
@@ -1703,8 +1758,15 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     init {
         WebBrowser.init(app)
+        SpaceEngine.onStatus = { msg -> viewModelScope.launch { spaceMessage = msg; if (msg != null) engineMessage = msg } }
+        if (useSpace) {
+            SpaceEngine.token = hfToken
+            SpaceEngine.ready = true
+            loadedModel = "🤗 " + SpaceEngine.MODEL
+        }
         HordeEngine.onStatus = { msg -> viewModelScope.launch { hordeMessage = msg; if (msg != null) engineMessage = msg } }
-        if (useHorde && HordeEngine.HordeModel(prefs.getString("hordeModel", "") ?: "", 1, 0.0, 0, 4096, 512).let { !it.uncensored || it.billions < HordeEngine.MIN_BILLIONS }) {
+        // AI Horde's models didn't stay uncensored, so the app no longer offers it: switch it off if it was on.
+        if (useHorde) {
             useHorde = false; prefs.edit().putBoolean("useHorde", false).apply()
         }
         if (useHorde && !prefs.getString("hordeModel", "").isNullOrBlank()) {

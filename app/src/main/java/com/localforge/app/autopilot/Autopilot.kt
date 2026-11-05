@@ -337,7 +337,10 @@ object Autopilot {
 
     private suspend fun ensureModel(): Boolean {
         val vm = app.state
-        if (Engine.isLoaded && !vm.useRemote && !vm.useHorde && (modelName == null || vm.loadedModel == modelName)) { loadFails = 0; return true }
+        if (Engine.isLoaded && !vm.useRemote && !vm.useHorde && !vm.useSpace && (modelName == null || vm.loadedModel == modelName)) { loadFails = 0; return true }
+        if (vm.useSpace) {
+            vm.ensureModel(null); loadFails = 0; return true
+        }
         if (vm.useHorde) {
             if (vm.ensureModel(null)) { loadFails = 0; return true }
             showStatus("Pick an AI Horde model on this screen.")

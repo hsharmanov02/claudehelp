@@ -162,3 +162,32 @@ fun HordeEngineCard(vm: AppViewModel) {
         }
     }
 }
+
+/** The uncensored Gemma 31B (Huihui abliterated) on a free Hugging Face Space: one tap, no account. */
+@Composable
+fun SpaceEngineCard(vm: AppViewModel) {
+    val on = vm.useSpace && Engine.isSpace
+    Panel(borderColor = if (on) C.Good else C.Border) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Box(Modifier.weight(1f)) { StatusDot(on, if (on) "Gemma 31B abliterated on" else "Gemma 31B abliterated (free)") }
+            Tag("tested uncensored", C.Bg, C.Good)
+        }
+        Text(
+            "Huihui Gemma 4 31B abliterated v2 on a free Hugging Face GPU. No account needed. Passed every refusal test. " +
+                "Hugging Face limits free GPU use: without an account it's a few replies at a time" +
+                (if (vm.hfToken.isBlank()) "; a free Hugging Face token (Models tab) gives more." else ". Your Hugging Face token is used for more."),
+            color = C.Muted, fontSize = 13.sp
+        )
+        vm.spaceMessage?.let { Text(it, color = C.Gold, fontSize = 13.sp) }
+        Spacer(Modifier.height(8.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            if (on) {
+                OutlinedButton(onClick = { vm.stopGenerating(); vm.stopSpace() }) { Text("Stop using it", color = C.Bad) }
+            } else {
+                Button(onClick = { vm.useSpaceEngine() }, enabled = !vm.spaceBusy, colors = ButtonDefaults.buttonColors(containerColor = C.Accent)) {
+                    Text(if (vm.spaceBusy) "Connecting…" else "Use it", fontWeight = FontWeight.Bold)
+                }
+            }
+        }
+    }
+}

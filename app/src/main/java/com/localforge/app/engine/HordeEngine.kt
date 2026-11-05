@@ -31,7 +31,7 @@ object HordeEngine {
      * jokes, lockpicking and insults, all answered, with the app's own instructions). Names alone lie: several
      * "heretic" / "uncensored" models on the Horde still refuse. Matched on the model name, so new quantizations count.
      */
-    val VERIFIED = listOf("g4-meromero-26b", "dark-craving-26b")
+    val VERIFIED = listOf("g4-meromero-26b")
 
     /** Only big models: small ones can't follow the app's tools and instructions well. */
     const val MIN_BILLIONS = 20.0

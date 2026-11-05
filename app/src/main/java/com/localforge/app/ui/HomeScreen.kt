@@ -84,7 +84,7 @@ fun HomeScreen(vm: AppViewModel) {
 
         EngineCard(vm)
 
-        HordeEngineCard(vm)
+        SpaceEngineCard(vm)
 
         RemoteEngineCard(vm)
 
@@ -128,7 +128,7 @@ private fun EngineCard(vm: AppViewModel) {
     Panel(borderColor = if (loaded != null) C.Accent else C.Border) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Box(Modifier.weight(1f)) { StatusDot(loaded != null, if (loaded != null) "Model ready" else "No model loaded") }
-            if (loaded != null) Tag(if (vm.useHorde) "AI Horde" else if (vm.useRemote) "Remote GPU" else "Local", C.CardInner) else Tag("Idle")
+            if (loaded != null) Tag(if (vm.useSpace) "Hugging Face" else if (vm.useHorde) "AI Horde" else if (vm.useRemote) "Remote GPU" else "Local", C.CardInner) else Tag("Idle")
         }
         Spacer(Modifier.height(8.dp))
         Text(
@@ -136,7 +136,7 @@ private fun EngineCard(vm: AppViewModel) {
             color = C.Muted, fontFamily = FontFamily.Monospace, fontSize = 14.sp,
             maxLines = 1, overflow = TextOverflow.Ellipsis
         )
-        Text(if (vm.useHorde) "Runs on AI Horde volunteer GPUs (free)" else if (vm.useRemote) "Runs on your remote GPU (see Remote GPU engine below)" else "${vm.nCtx} tokens · ${vm.threads} threads · CPU", color = C.Muted, fontSize = 13.sp)
+        Text(if (vm.useSpace) "Runs on a free Hugging Face GPU" else if (vm.useHorde) "Runs on AI Horde volunteer GPUs (free)" else if (vm.useRemote) "Runs on your remote GPU (see Remote GPU engine below)" else "${vm.nCtx} tokens · ${vm.threads} threads · CPU", color = C.Muted, fontSize = 13.sp)
         vm.engineMessage?.let {
             Spacer(Modifier.height(6.dp))
             Text(it, color = C.Text, fontSize = 14.sp)

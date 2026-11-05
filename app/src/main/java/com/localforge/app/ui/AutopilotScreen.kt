@@ -210,7 +210,7 @@ fun AutopilotScreen(vm: AppViewModel) {
             }
         }
 
-        HordeEngineCard(vm)
+        SpaceEngineCard(vm)
 
         RemoteEngineCard(vm)
 
