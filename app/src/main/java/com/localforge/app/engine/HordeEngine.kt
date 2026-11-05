@@ -125,7 +125,7 @@ object HordeEngine {
         val n = model.lowercase()
         val sb = StringBuilder()
         return when {
-            "gemma" in n || n.substringAfterLast('/').startsWith("g4-") -> {
+            "gemma" in n -> {
                 // Gemma has no system role: the system text goes before the first user message.
                 var system = ""
                 messages.forEach { m ->
