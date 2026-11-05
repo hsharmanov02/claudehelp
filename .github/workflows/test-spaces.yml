@@ -5,6 +5,7 @@ on:
   push:
     paths:
       - "remote/try_space.py"
+      - "remote/raw_space.py"
       - ".github/workflows/test-spaces.yml"
   workflow_dispatch:
 
@@ -15,12 +16,6 @@ jobs:
   try:
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    strategy:
-      fail-fast: false
-      matrix:
-        space:
-          - "kivilaid/Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive-ZeroGPU /respond 1"
-          - "Josssdiff/Huihui-Qwen3.6-35B-abliterated-chat /chat"
     steps:
       - uses: actions/checkout@v4
-      - run: python3 -u remote/try_space.py ${{ matrix.space }}
+      - run: python3 -u remote/raw_space.py
