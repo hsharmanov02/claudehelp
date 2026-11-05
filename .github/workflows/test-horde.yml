@@ -17,6 +17,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Try AI Horde anonymously
-        run: python3 remote/test_horde.py
+        run: python3 -u remote/test_horde.py
       - name: How fast is a GitHub runner itself? (CPU, 16 GB RAM)
         run: nproc; free -g; lscpu | grep -E "Model name|Flags" | cut -c1-120

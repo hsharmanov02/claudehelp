@@ -3,7 +3,7 @@ then asks the most-served ones for a normal reply and an uncensored one, timing 
 import json, time, urllib.request
 
 API = "https://aihorde.net/api/v2"
-H = {"apikey": "0000000000", "Client-Agent": "LocalForge-test:1:github", "Content-Type": "application/json"}
+H = {"User-Agent": "LocalForge-test/1.0", "apikey": "0000000000", "Client-Agent": "LocalForge-test:1:github", "Content-Type": "application/json"}
 REFUSALS = ("i can't", "i cannot", "i'm sorry", "as an ai", "i won't", "cannot fulfill", "i must decline")
 
 
